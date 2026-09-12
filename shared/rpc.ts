@@ -10,6 +10,8 @@ const portable = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => ({
 
 const owner = { clientId: Schema.NonEmptyString };
 
+const connection = { ...owner, sessionId: Schema.NullOr(Schema.String) };
+
 const errors = { bridge_error: portable(Schema.Struct({ message: Schema.String })) };
 
 export const BrowserRpc = Rpc.define({
@@ -19,12 +21,12 @@ export const BrowserRpc = Rpc.define({
     read: { input: portable(ReadInput), output: portable(Page), errors },
     list: { input: portable(Schema.Struct({})), output: portable(Schema.Array(Tab)), errors },
     claim: {
-      input: portable(Schema.Struct(owner)),
+      input: portable(Schema.Struct(connection)),
       errors,
       output: portable(Schema.Null),
     },
     poll: {
-      input: portable(Schema.Struct(owner)),
+      input: portable(Schema.Struct(connection)),
       output: portable(Schema.Array(Job)),
       errors,
     },

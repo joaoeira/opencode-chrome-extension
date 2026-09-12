@@ -6,6 +6,6 @@ Run `bun run check` after changes. Run `bun run test:browser` for changes to the
 
 All generic and Effect anti-slop rules are enabled. Do not disable or weaken them to accommodate new code. Preserve the vendored rules and provenance. Format with `bun run format` after lint whitespace autofixes.
 
-Keep credentials, runtime data, and generated artifacts out of Git. List and read only tabs in the sidebar's own window. A read without tabId resolves the active tab anew; an explicit tabId must never fall back to another tab or activate it. Return title, URL, and tab ID. Preserve connection ownership, full Defuddle Markdown output, deadlines, and cleanup.
+Keep credentials, runtime data, and generated artifacts out of Git. List and read only tabs in the sidebar's own window. A read without tabId resolves the active tab anew; an explicit tabId must never fall back to another tab or activate it. Return title, URL, and tab ID. Offer model tools only to the connected sidebar's visible session; a switch cancels pending work from the previous session. Preserve connection ownership, full Defuddle Markdown output, deadlines, and cleanup.
 
 Tests must pin down caller-visible outcomes, ordering, or failure containment. Prefer focused public-output assertions to whole-object equality. Do not add production seams solely for tests. Avoid duplicate coverage through another call site. For subtle guarantees, temporarily break the implementation and confirm the focused test fails, then restore it.

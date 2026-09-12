@@ -1,4 +1,4 @@
-import { Effect, Fiber, Schema, Schedule } from "effect";
+import { Effect, Fiber, Schema, Schedule, Option } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { BrowserError, type Settings, localOrigin } from "../shared/contracts.ts";
 import { NativeReply, nativeHostName } from "../shared/native.ts";
@@ -19,6 +19,34 @@ function element<T extends Element>(
 const iframe = element("#opencode", HTMLIFrameElement);
 
 let settings: Settings | undefined;
+
+let sessionId: string | null = null;
+
+const FrameLocation = Schema.Struct({
+  type: Schema.Literal("opencode-chrome:location"),
+  pathname: Schema.String,
+});
+
+window.addEventListener("message", (event) => {
+  if (!settings || event.source !== iframe.contentWindow || event.origin !== settings.server)
+    return;
+  const decoded = Schema.decodeUnknownOption(FrameLocation)(event.data);
+
+  if (Option.isNone(decoded)) return;
+  const route = /^\/server\/([^/]+)\/session\/([^/]+)$/.exec(decoded.value.pathname);
+
+  const serverKey = btoa(settings.server)
+    .replace(/=+$/, "")
+    .replaceAll("+", "-")
+    .replaceAll("/", "_");
+
+  sessionId = route?.[1] === serverKey ? (route[2] ?? null) : null;
+});
+
+iframe.addEventListener("load", () => {
+  if (settings)
+    iframe.contentWindow?.postMessage("opencode-chrome:request-location", settings.server);
+});
 
 const resolveConnection = Effect.fn("Sidebar.discover")(function* () {
   const raw = yield* Effect.tryPromise({
@@ -54,7 +82,10 @@ const resolveConnection = Effect.fn("Sidebar.discover")(function* () {
     settings = normalized;
     iframe.hidden = false;
 
-    if (changed) iframe.src = normalized.server;
+    if (changed) {
+      sessionId = null;
+      iframe.src = normalized.server;
+    }
   });
 
   return normalized;
@@ -62,7 +93,7 @@ const resolveConnection = Effect.fn("Sidebar.discover")(function* () {
 
 const program = Effect.gen(function* () {
   const selected = yield* resolveConnection();
-  yield* connect(selected);
+  yield* connect(selected, () => sessionId);
 }).pipe(
   Effect.scoped,
   Effect.provide(browserLayer),

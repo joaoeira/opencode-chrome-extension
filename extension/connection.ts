@@ -23,14 +23,17 @@ const clientFor = Effect.fn("Sidebar.client")(function* (settings: Settings) {
   );
 });
 
-export const connect = Effect.fn("Sidebar.connect")(function* (settings: Settings) {
+export const connect = Effect.fn("Sidebar.connect")(function* (
+  settings: Settings,
+  currentSession: () => string | null,
+) {
   const browser = yield* Browser;
   const client = yield* clientFor(settings);
   const rpc = client.rpc(BrowserRpc);
   const clientId = crypto.randomUUID();
   const options = { location: { directory: settings.directory } };
 
-  yield* rpc.claim({ clientId }, options);
+  yield* rpc.claim({ clientId, sessionId: currentSession() }, options);
   yield* Effect.addFinalizer(() =>
     rpc.release({ clientId }, options).pipe(
       Effect.timeout("2 seconds"),
@@ -39,7 +42,7 @@ export const connect = Effect.fn("Sidebar.connect")(function* (settings: Setting
   );
 
   const poll = Effect.gen(function* () {
-    const jobs = yield* rpc.poll({ clientId }, options);
+    const jobs = yield* rpc.poll({ clientId, sessionId: currentSession() }, options);
     yield* Effect.forEach(
       jobs,
       (job) =>

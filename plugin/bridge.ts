@@ -17,6 +17,7 @@ interface Pending {
 interface Connection {
   readonly clientId: string;
   readonly lastSeen: number;
+  readonly sessionId: string | null;
 }
 
 interface State {
@@ -25,8 +26,12 @@ interface State {
 }
 
 interface Interface {
-  readonly claim: (clientId: string) => Effect.Effect<void, BridgeError>;
-  readonly poll: (clientId: string) => Effect.Effect<ReadonlyArray<Job>, BridgeError>;
+  readonly isActive: (sessionId: string) => Effect.Effect<boolean>;
+  readonly claim: (clientId: string, sessionId: string | null) => Effect.Effect<void, BridgeError>;
+  readonly poll: (
+    clientId: string,
+    sessionId: string | null,
+  ) => Effect.Effect<ReadonlyArray<Job>, BridgeError>;
   readonly complete: (
     clientId: string,
     id: string,
@@ -143,7 +148,14 @@ export const bridgeLayer = Layer.effect(
     });
 
     return Bridge.of({
-      claim: Effect.fn("Bridge.claim")(function* (clientId) {
+      isActive: Effect.fn("Bridge.isActive")((sessionId) =>
+        current().pipe(
+          Effect.map((connection) => connection.sessionId === sessionId),
+          Effect.catchTag("BridgeError", () => Effect.succeed(false)),
+          mutex.withPermits(1),
+        ),
+      ),
+      claim: Effect.fn("Bridge.claim")(function* (clientId, sessionId) {
         const now = yield* Clock.currentTimeMillis;
         const snapshot = yield* Ref.get(state);
 
@@ -161,17 +173,28 @@ export const bridgeLayer = Layer.effect(
 
         yield* failPending("The browser connection restarted. Request the page again.");
         yield* Ref.set(state, {
-          connection: Option.some({ clientId, lastSeen: now }),
+          connection: Option.some({ clientId, lastSeen: now, sessionId }),
           pending: new Map(),
         });
       }, mutex.withPermits(1)),
-      poll: Effect.fn("Bridge.poll")(function* (clientId) {
+      poll: Effect.fn("Bridge.poll")(function* (clientId, sessionId) {
         const connection = yield* owned(clientId);
+
+        if (sessionId !== connection.sessionId) {
+          yield* failPending(
+            "The Chrome sidebar switched sessions. Request browser access from the visible session.",
+          );
+        }
+
         const now = yield* Clock.currentTimeMillis;
         const snapshot = yield* Ref.get(state);
         yield* Ref.set(state, {
           ...snapshot,
-          connection: Option.some({ ...connection, lastSeen: now }),
+          connection: Option.some({
+            ...connection,
+            lastSeen: now,
+            sessionId,
+          }),
         });
 
         return Array.from(snapshot.pending.values(), (entry) => entry.job);

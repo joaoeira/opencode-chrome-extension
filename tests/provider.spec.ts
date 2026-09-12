@@ -1,11 +1,12 @@
 import { Service } from "@opencode/client/service";
-import { expect, test } from "@playwright/test";
+import { expect, test, type BrowserContext } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { Schema } from "effect";
-import { Reply, Job, BrowserRequest } from "../shared/contracts.ts";
+import { Config, Effect, Schema } from "effect";
+import { Tab } from "../shared/contracts.ts";
 
 const ModelRequest = Schema.Struct({
   messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.Unknown })),
@@ -18,11 +19,24 @@ const ModelRequest = Schema.Struct({
   ),
 });
 
-test("exposes the Chrome reader and delivers its result to the model without desktop browser tools", async () => {
+test("browser tools follow the sidebar session and deliver full content across projects", async ({
+  playwright,
+}) => {
   const directory = await mkdtemp(resolve(tmpdir(), "opencode-provider-test-"));
   const requests: (typeof ModelRequest.Type)[] = [];
+  let fixtureUrl = "";
+  let context: BrowserContext | undefined;
 
   const provider = createServer(async (request, response) => {
+    if (request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "text/html" });
+      response.end(
+        `<!doctype html><title>Chrome fixture</title><article><p>${"Visible Chrome content. ".repeat(5500)}</p><p>ARTICLE ENDS HERE</p></article>`,
+      );
+
+      return;
+    }
+
     const chunks: Buffer[] = [];
 
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -32,21 +46,38 @@ test("exposes the Chrome reader and delivers its result to the model without des
     );
 
     requests.push(body);
+    const results = body.messages.filter((message) => message.role === "tool");
 
-    const resultCount = body.messages.filter((message) => message.role === "tool").length;
+    const callBrowser =
+      body.tools?.some((tool) => tool.function.name === "browser_read_page") &&
+      JSON.stringify(body.messages).includes("What page am I on?") &&
+      results.length < 2;
 
-    const callReader =
-      body.tools?.some((tool) => tool.function.name === "browser_read_page") && resultCount < 2;
+    const toolName = results.length === 0 ? "browser_list_tabs" : "browser_read_page";
+    const listed = results[0];
 
-    const toolName = resultCount === 0 ? "browser_list_tabs" : "browser_read_page";
+    const tabId =
+      callBrowser && listed
+        ? Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Tab)))(listed.content).find(
+            (tab) => tab.url === fixtureUrl,
+          )?.tabId
+        : undefined;
 
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 0, model: "fixture", choices: [{ index: 0, delta: callReader ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${resultCount}`, type: "function", function: { name: toolName, arguments: resultCount === 0 ? "{}" : JSON.stringify({ tabId: 123 }) } }] } : { role: "assistant", content: "Hi" }, finish_reason: callReader ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 0, model: "fixture", choices: [{ index: 0, delta: callBrowser ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${results.length}`, type: "function", function: { name: toolName, arguments: JSON.stringify(tabId === undefined ? {} : { tabId }) } }] } : { role: "assistant", content: "Hi" }, finish_reason: callBrowser ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
     );
   });
 
   const file = resolve(directory, "state/opencode/service.json");
+
+  const env = {
+    XDG_CONFIG_HOME: resolve(directory, "config"),
+    XDG_DATA_HOME: resolve(directory, "data"),
+    XDG_STATE_HOME: resolve(directory, "state"),
+    XDG_CACHE_HOME: resolve(directory, "cache"),
+    FIXTURE_API_KEY: "local-fixture-key",
+  };
 
   try {
     await new Promise<void>((done) => provider.listen(0, "127.0.0.1", done));
@@ -55,6 +86,7 @@ test("exposes the Chrome reader and delivers its result to the model without des
       provider.address(),
     );
 
+    fixtureUrl = `http://127.0.0.1:${port}/article`;
     await mkdir(resolve(directory, "config/opencode"), { recursive: true });
     await writeFile(
       resolve(directory, "config/opencode/opencode.json"),
@@ -89,13 +121,7 @@ test("exposes the Chrome reader and delivers its result to the model without des
         "--port",
         "0",
       ],
-      env: {
-        XDG_CONFIG_HOME: resolve(directory, "config"),
-        XDG_DATA_HOME: resolve(directory, "data"),
-        XDG_STATE_HOME: resolve(directory, "state"),
-        XDG_CACHE_HOME: resolve(directory, "cache"),
-        FIXTURE_API_KEY: "local-fixture-key",
-      },
+      env,
     });
 
     const post = async (path: string, body: Schema.Json) => {
@@ -111,90 +137,124 @@ test("exposes the Chrome reader and delivers its result to the model without des
       return result;
     };
 
-    const session = Schema.decodeUnknownSync(
-      Schema.Struct({ data: Schema.Struct({ id: Schema.String }) }),
-    )(
-      await post("session", {
-        location: { directory },
-        model: { providerID: "fixture", id: "fixture" },
-      }),
+    const createSession = async () =>
+      Schema.decodeUnknownSync(Schema.Struct({ data: Schema.Struct({ id: Schema.String }) }))(
+        await post("session", {
+          location: { directory },
+          model: { providerID: "fixture", id: "fixture" },
+        }),
+      ).data.id;
+
+    const first = await createSession();
+    const second = await createSession();
+    let sequence = 0;
+
+    const visibleTools = async (sessionId: string) => {
+      const text = `Tool visibility probe ${sequence++}`;
+      await post(`session/${sessionId}/prompt`, { text });
+      await expect
+        .poll(() =>
+          requests.some(
+            (request) =>
+              request.tools !== undefined && JSON.stringify(request.messages).includes(text),
+          ),
+        )
+        .toBe(true);
+
+      return requests
+        .find(
+          (request) =>
+            request.tools !== undefined && JSON.stringify(request.messages).includes(text),
+        )
+        ?.tools?.flatMap((tool) =>
+          tool.function.name.startsWith("browser_") ? [tool.function.name] : [],
+        )
+        .sort();
+    };
+
+    const browserTools = ["browser_list_tabs", "browser_read_page"];
+    expect(await visibleTools(first)).toEqual([]);
+
+    const profile = resolve(directory, "chrome-profile");
+    execFileSync("bun", ["scripts/install-native.ts"], {
+      env: {
+        ...process.env,
+        ...env,
+        OPENCODE_CHROME_PORT: "0",
+        OPENCODE_CHROME_HOST_DIRECTORY: resolve(profile, "NativeMessagingHosts"),
+      },
+    });
+
+    const executablePath = await Effect.runPromise(
+      Config.string("CHROMIUM_EXECUTABLE").pipe(
+        Config.withDefault(playwright.chromium.executablePath()),
+      ),
     );
 
-    const sidebarDirectory = resolve(directory, "sidebar-project");
-    await mkdir(sidebarDirectory);
+    const extension = resolve("dist/extension");
+    context = await playwright.chromium.launchPersistentContext(profile, {
+      executablePath,
+      headless: true,
+      args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
+    });
+    const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+    const target = await context.newPage();
+    await target.goto(fixtureUrl);
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${new URL(worker.url()).host}/sidepanel.html`);
+    await expect(panel.locator("#opencode")).toBeVisible();
 
-    const rpc = (method: string, input: Schema.Json) =>
-      post(
-        `rpc/chrome/${method}?${new URLSearchParams({ "location[directory]": sidebarDirectory })}`,
-        {
-          input,
-        },
-      );
+    const frame = await panel
+      .locator("#opencode")
+      .elementHandle()
+      .then((element) => element?.contentFrame());
 
-    await rpc("claim", { clientId: "fixture-sidebar" });
-    await post(`session/${session.data.id}/prompt`, { text: "What page am I on?" });
+    if (!frame) throw new Error("Expected OpenCode iframe");
+
+    const route = (id: string) =>
+      `/server/${Buffer.from(endpoint.url).toString("base64url")}/session/${id}`;
+
+    await frame.goto(`${endpoint.url}${route(first)}`);
+    await target.bringToFront();
+    await expect.poll(() => visibleTools(first), { timeout: 15000 }).toEqual(browserTools);
+    expect(await visibleTools(second)).toEqual([]);
+
+    await post(`session/${first}/prompt`, { text: "What page am I on?" });
     await expect
       .poll(
         () =>
           requests
-            .flatMap((request) => request.tools ?? [])
-            .find((tool) => tool.function.name === "browser_read_page")?.function.parameters,
-        { timeout: 30000 },
+            .flatMap((request) => request.messages)
+            .flatMap((message) => (message.role === "tool" ? [message.content] : [])),
+        { timeout: 15000 },
       )
-      .toMatchObject({ type: "object", properties: {} });
-
+      .toContainEqual(expect.stringContaining("ARTICLE ENDS HERE"));
+    expect(
+      requests
+        .flatMap((request) => request.tools ?? [])
+        .find((tool) => tool.function.name === "browser_read_page")?.function.parameters,
+    ).toMatchObject({ type: "object", properties: { tabId: { type: "integer" } } });
     expect(JSON.stringify(requests)).not.toContain("browser.tabs.list");
 
-    const jobs = Schema.Struct({ output: Schema.Array(Job) });
-    let job: Job | undefined;
-    await expect
-      .poll(async () => {
-        job = Schema.decodeUnknownSync(jobs)(await rpc("poll", { clientId: "fixture-sidebar" }))
-          .output[0];
-
-        return job;
-      })
-      .toBeDefined();
-    expect(job?.request._tag).toBe("List");
-    await rpc("complete", {
-      clientId: "fixture-sidebar",
-      id: job?.id ?? "",
-      reply: Reply.cases.Tabs.make({
-        tabs: [
-          { tabId: 123, title: "Chrome fixture", url: "https://example.com/chrome", active: false },
-        ],
-      }),
+    // SPA navigation must transfer access without reloading the sidebar or its connection.
+    await frame.evaluate((path) => {
+      history.pushState({}, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, route(second));
+    await expect.poll(() => visibleTools(second), { timeout: 15000 }).toEqual(browserTools);
+    expect(await visibleTools(first)).toEqual([]);
+    await frame.evaluate(() => {
+      history.pushState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
     });
-    await expect
-      .poll(async () => {
-        job = Schema.decodeUnknownSync(jobs)(
-          await rpc("poll", { clientId: "fixture-sidebar" }),
-        ).output.find((job) => BrowserRequest.guards.Read(job.request));
-
-        return job?.request;
-      })
-      .toMatchObject({ tabId: 123 });
-    await rpc("complete", {
-      clientId: "fixture-sidebar",
-      id: job?.id ?? "",
-      reply: Reply.cases.Success.make({
-        page: {
-          tabId: 123,
-          title: "Chrome fixture",
-          url: "https://example.com/chrome",
-          text: "Visible Chrome content. ".repeat(5000) + "END_OF_ARTICLE",
-        },
-      }),
-    });
-    await expect
-      .poll(() =>
-        requests
-          .flatMap((request) => request.messages)
-          .flatMap((message) => (message.role === "tool" ? [message.content] : [])),
-      )
-      .toContainEqual(expect.stringContaining("END_OF_ARTICLE"));
+    await expect.poll(() => visibleTools(second)).toEqual([]);
+    await frame.goto(`${endpoint.url}${route(second)}`);
+    await expect.poll(() => visibleTools(second)).toEqual(browserTools);
+    await panel.close();
+    await expect.poll(() => visibleTools(second), { timeout: 15000 }).toEqual([]);
   } finally {
     await Service.stop({ file });
+    await context?.close();
     provider.closeAllConnections();
     await new Promise<void>((done) => provider.close(() => done()));
     await rm(directory, { recursive: true, force: true });

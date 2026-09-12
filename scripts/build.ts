@@ -7,7 +7,7 @@ await Effect.runPromise(
     yield* Effect.tryPromise(() => mkdir("dist/extension", { recursive: true }));
     yield* Effect.tryPromise(() =>
       build({
-        entryPoints: ["extension/background.ts", "extension/sidepanel.ts"],
+        entryPoints: ["extension/background.ts", "extension/sidepanel.ts", "extension/session.ts"],
         bundle: true,
         format: "esm",
         platform: "browser",

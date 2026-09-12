@@ -34,7 +34,7 @@ There are three pieces:
 
 When the model requests a page, the extension extracts it and sends the result to OpenCode. OpenCode includes that result in the next model request. Switching tabs alone does not send page content.
 
-One connected sidebar serves **all projects and sessions on the same server**. Switching projects in OpenCode requires no browser reconnection. Keep the sidebar open while using browser tools; closing it disconnects browser access but leaves the server running.
+The browser connection is shared across projects, but browser tools are offered only to **the session currently open in the sidebar**. Switching sessions moves access with the sidebar; returning to the home screen removes it. Other terminal sessions do not see these tools. If you open the same session in the terminal and sidebar, it has browser access in both places. Closing the sidebar removes access when it disconnects or its heartbeat expires (within eight seconds), and leaves the server running. Previously returned page content stays in the conversation.
 
 ## Installation
 
@@ -125,7 +125,7 @@ The server connection is restricted to loopback HTTP. Credentials stay out of if
 
 **The sidebar is blank or doesn't connect.** Run `bun run setup` again, then click **Reload** on the extension's card in `chrome://extensions` and reopen the sidebar. Check for an unanswered macOS filesystem prompt. To start or discover the service from the terminal, run `bun run dev`.
 
-**The model doesn't have the browser tools.** Check the absolute plugin path in your global OpenCode configuration and restart the server. The plugin must be enabled for the project your chat uses.
+**The model doesn't have the browser tools.** Check the absolute plugin path in your global OpenCode configuration and restart the server. The plugin must be enabled for the project your chat uses, and the chat must be the session currently displayed in the connected sidebar.
 
 **A tool says no sidebar is connected.** Keep the sidebar open and close any other OpenCode sidebars connected to that server. After updating this repository, rebuild and reload the extension as well as restarting the server.
 
@@ -156,7 +156,7 @@ bunx playwright install chromium
 bun run test:browser
 ```
 
-Integration tests use separate OpenCode servers and temporary Chromium profiles. Model requests go to a local fake provider, so the tests do not spend model credits. They cover tab selection, background reads, window boundaries, connection recovery, full-content delivery, and tool calls across projects. The automated UI tests open the sidebar document as an extension tab; Chrome's native side-panel activation remains a manual check.
+Integration tests use separate OpenCode servers and temporary Chromium profiles. Model requests go to a local fake provider, so the tests do not spend model credits. They cover tab selection, background reads, window boundaries, connection recovery, full-content delivery, tool calls across projects, and tool visibility as the sidebar opens, switches sessions, returns home, and closes. The automated UI tests open the sidebar document as an extension tab; Chrome's native side-panel activation remains a manual check.
 
 After changing extension code, run `bun run build` and reload the extension in Chrome. After changing plugin code, restart OpenCode. `bun run dev` ensures the background service is running and then exits; it is not a file watcher.
 

@@ -1,4 +1,5 @@
 import { Plugin } from "@opencode/plugin/effect";
+import type { SessionContext } from "@opencode/plugin/effect/session";
 import { Tool } from "@opencode/schema/tool";
 import { Context, Effect, Layer, Schema } from "effect";
 import { ReadInput } from "../shared/contracts.ts";
@@ -45,16 +46,16 @@ export default Plugin.define({
                 rpc.error("bridge_error", error.message, { message: error.message }),
               ),
             ),
-        claim: ({ clientId }, rpc) =>
-          bridge.claim(clientId).pipe(
+        claim: ({ clientId, sessionId }, rpc) =>
+          bridge.claim(clientId, sessionId).pipe(
             Effect.as(null),
             Effect.mapError((error) =>
               rpc.error("bridge_error", error.message, { message: error.message }),
             ),
           ),
-        poll: ({ clientId }, rpc) =>
+        poll: ({ clientId, sessionId }, rpc) =>
           bridge
-            .poll(clientId)
+            .poll(clientId, sessionId)
             .pipe(
               Effect.mapError((error) =>
                 rpc.error("bridge_error", error.message, { message: error.message }),
@@ -75,6 +76,39 @@ export default Plugin.define({
             ),
           ),
       });
+
+      const isChromeTool = (id: string) =>
+        [
+          "browser.read_page",
+          "browser.list_tabs",
+          "browser_read_page",
+          "browser_list_tabs",
+        ].includes(id);
+
+      const filterTools = Effect.fn("Chrome.filterTools")(function* (request: SessionContext) {
+        if (yield* bridge.isActive(request.sessionID)) return;
+
+        for (const id of Object.keys(request.tools)) {
+          if (isChromeTool(id)) delete request.tools[id];
+        }
+      });
+
+      for (const hook of ["context", "generate", "compaction"] as const) {
+        yield* ctx.session.hook(hook, filterTools);
+      }
+
+      yield* ctx.tool.hook(
+        "execute.before",
+        Effect.fn("Chrome.authorizeTool")(function* (request) {
+          if (isChromeTool(request.tool) && !(yield* bridge.isActive(request.sessionID))) {
+            return yield* Effect.fail(
+              new Tool.Error({
+                message: "Open this session in the connected Chrome sidebar to use browser tools.",
+              }),
+            );
+          }
+        }),
+      );
 
       yield* ctx.tool.transform((editor) => {
         // This plugin supplies Chrome access in place of the desktop-only browser transport.

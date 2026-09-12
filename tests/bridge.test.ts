@@ -11,13 +11,13 @@ const page = { ...target, text: "Hello from Chrome" };
 it.effect("routes a read to the sidebar and returns its result", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("sidebar");
+    yield* bridge.claim("sidebar", null);
 
     const read = yield* bridge
       .read("session-1")
       .pipe(Effect.forkScoped({ startImmediately: true }));
 
-    const jobs = yield* bridge.poll("sidebar");
+    const jobs = yield* bridge.poll("sidebar", null);
     expect(jobs).toHaveLength(1);
     const job = jobs[0];
 
@@ -25,26 +25,26 @@ it.effect("routes a read to the sidebar and returns its result", () =>
     expect(job.sessionId).toBe("session-1");
     yield* bridge.complete("sidebar", job.id, Reply.cases.Success.make({ page }));
     expect((yield* Fiber.join(read)).text).toBe("Hello from Chrome");
-    expect(yield* bridge.poll("sidebar")).toEqual([]);
+    expect(yield* bridge.poll("sidebar", null)).toEqual([]);
   }).pipe(Effect.provide(bridgeLayer)),
 );
 
 it.effect("rejects another sidebar without changing connection ownership", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("first");
-    expect((yield* Effect.flip(bridge.claim("second"))).message).toContain("other sidebar");
-    expect((yield* Effect.flip(bridge.poll("second"))).message).toContain("Another sidebar");
-    expect(yield* bridge.poll("first")).toEqual([]);
+    yield* bridge.claim("first", null);
+    expect((yield* Effect.flip(bridge.claim("second", null))).message).toContain("other sidebar");
+    expect((yield* Effect.flip(bridge.poll("second", null))).message).toContain("Another sidebar");
+    expect(yield* bridge.poll("first", null)).toEqual([]);
   }).pipe(Effect.provide(bridgeLayer)),
 );
 
 it.effect("rejects replies from the wrong connection", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("first");
+    yield* bridge.claim("first", null);
     const read = yield* bridge.read("session").pipe(Effect.forkScoped({ startImmediately: true }));
-    const [job] = yield* bridge.poll("first");
+    const [job] = yield* bridge.poll("first", null);
 
     if (!job) throw new Error("Expected queued job");
     expect(
@@ -59,7 +59,7 @@ it.effect("rejects replies from the wrong connection", () =>
 it.effect("fails a pending read when the sidebar disconnects", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("sidebar");
+    yield* bridge.claim("sidebar", null);
 
     const read = yield* bridge
       .read("session")
@@ -73,18 +73,18 @@ it.effect("fails a pending read when the sidebar disconnects", () =>
 it.effect("expires a connection after missed heartbeats", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("sidebar");
+    yield* bridge.claim("sidebar", null);
     yield* TestClock.adjust("9 seconds");
     expect((yield* Effect.flip(bridge.read("session"))).message).toContain("expired");
-    yield* bridge.claim("new-sidebar");
-    expect(yield* bridge.poll("new-sidebar")).toEqual([]);
+    yield* bridge.claim("new-sidebar", null);
+    expect(yield* bridge.poll("new-sidebar", null)).toEqual([]);
   }).pipe(Effect.provide(bridgeLayer)),
 );
 
 it.effect("times out and removes an unanswered read", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("sidebar");
+    yield* bridge.claim("sidebar", null);
 
     const read = yield* bridge
       .read("session")
@@ -92,38 +92,38 @@ it.effect("times out and removes an unanswered read", () =>
 
     for (const delay of [6000, 6000, 6000]) {
       yield* TestClock.adjust(delay);
-      yield* bridge.poll("sidebar");
+      yield* bridge.poll("sidebar", null);
     }
 
     yield* TestClock.adjust("2 seconds");
     expect((yield* Fiber.join(read)).message).toContain("20 seconds");
-    expect(yield* bridge.poll("sidebar")).toHaveLength(0);
+    expect(yield* bridge.poll("sidebar", null)).toHaveLength(0);
   }).pipe(Effect.provide(bridgeLayer)),
 );
 
 it.effect("removes interrupted reads from the sidebar queue", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("sidebar");
+    yield* bridge.claim("sidebar", null);
 
     const reads = yield* Effect.forEach(["a", "b", "c"], (id) =>
       bridge.read(id).pipe(Effect.forkScoped({ startImmediately: true })),
     );
 
-    const jobs = yield* bridge.poll("sidebar");
+    const jobs = yield* bridge.poll("sidebar", null);
     expect(jobs.map((job) => job.sessionId).sort()).toEqual(["a", "b", "c"]);
     yield* Effect.forEach(reads, Fiber.interrupt);
-    expect(yield* bridge.poll("sidebar")).toEqual([]);
+    expect(yield* bridge.poll("sidebar", null)).toEqual([]);
   }).pipe(Effect.provide(bridgeLayer)),
 );
 
 it.effect("delivers out-of-order replies to their original callers", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("sidebar");
+    yield* bridge.claim("sidebar", null);
     const first = yield* bridge.read("first").pipe(Effect.forkScoped({ startImmediately: true }));
     const second = yield* bridge.read("second").pipe(Effect.forkScoped({ startImmediately: true }));
-    const jobs = yield* bridge.poll("sidebar");
+    const jobs = yield* bridge.poll("sidebar", null);
     const firstJob = jobs.find((job) => job.sessionId === "first");
     const secondJob = jobs.find((job) => job.sessionId === "second");
 
@@ -146,17 +146,31 @@ it.effect("delivers out-of-order replies to their original callers", () =>
 it.effect("rejects a page from the wrong tab instead of returning it to the caller", () =>
   Effect.gen(function* () {
     const bridge = yield* Bridge;
-    yield* bridge.claim("sidebar");
+    yield* bridge.claim("sidebar", null);
 
     const read = yield* bridge
       .read("session", { tabId: 99 })
       .pipe(Effect.flip, Effect.forkScoped({ startImmediately: true }));
 
-    const [job] = yield* bridge.poll("sidebar");
+    const [job] = yield* bridge.poll("sidebar", null);
 
     if (!job) throw new Error("Expected queued read");
     yield* bridge.complete("sidebar", job.id, Reply.cases.Success.make({ page }));
     expect((yield* Fiber.join(read)).message).toContain("different tab");
-    expect(yield* bridge.poll("sidebar")).toHaveLength(0);
+    expect(yield* bridge.poll("sidebar", null)).toHaveLength(0);
+  }).pipe(Effect.provide(bridgeLayer)),
+);
+
+it.effect("cancels queued browser work when the sidebar switches sessions", () =>
+  Effect.gen(function* () {
+    const bridge = yield* Bridge;
+    yield* bridge.claim("sidebar", "first");
+
+    const read = yield* bridge
+      .read("first")
+      .pipe(Effect.flip, Effect.forkScoped({ startImmediately: true }));
+
+    expect(yield* bridge.poll("sidebar", "second")).toHaveLength(0);
+    expect((yield* Fiber.join(read)).message).toContain("switched sessions");
   }).pipe(Effect.provide(bridgeLayer)),
 );

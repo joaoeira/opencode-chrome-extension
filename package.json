@@ -1,0 +1,43 @@
+{
+  "name": "opencode-chrome-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "dev": "bun scripts/start.ts",
+    "lint": "oxlint --deny-warnings",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test && bun run build",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "test:browser": "bun run build && playwright test",
+    "setup": "bun run build && bun scripts/install-native.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.112",
+    "@opencode/client": "2.0.2",
+    "@opencode/plugin": "2.0.2",
+    "@opencode/schema": "2.0.2",
+    "defuddle": "0.19.3",
+    "effect": "4.0.0-rc.112"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0-rc.112",
+    "@opencode/cli": "2.0.2",
+    "@oxlint/plugins": "1.82.0",
+    "@playwright/test": "^1.58.0",
+    "@types/chrome": "0.2.9",
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "oxfmt": "0.67.0",
+    "oxlint": "1.82.0",
+    "typescript": "7.0.2",
+    "vitest": "^4.1.0"
+  },
+  "packageManager": "bun@1.2.21",
+  "trustedDependencies": [
+    "@opencode/cli"
+  ]
+}

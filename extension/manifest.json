@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "OpenCode Sidebar",
+  "version": "0.1.0",
+  "description": "OpenCode's local web UI with tools to list Chrome tabs and read their content.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "scripting",
+    "webRequest",
+    "webRequestAuthProvider",
+    "tabs",
+    "nativeMessaging"
+  ],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "Open OpenCode sidebar"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; frame-src http://127.0.0.1:* http://localhost:*; connect-src http://127.0.0.1:* http://localhost:*; style-src 'self'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArnAyCRoRMcYWpzBduxy8jpeZBEMHJiPT3tgWVCKIgoUbGBkLgtg3DFePi6OzS4U1rSPTTIzaSiuijNt6Ks+1FcAABliVZhsfGDHmcis1gzsvqG5btZbzWbHiA6RROe51r4hcJwdA8PR9MBkBy0kYOYKgv73oi7Mk1JpXfzWWVvnJ3CkmyCWYIFWCiBbHFb3yUMXNvXn9DlaLbGWi3JzNcbTyyQpGHkFQkYp4FKH5KuxwnULhYPzGb454HqLhsLhbmJ7NmA6D2Ecs5bqVVcHgIPmmXJn6BwlJth/XwMBAuL7BrJYC8oxrpo/R1uADwqZs1W84YKqY7gVyYm7k50rhGwIDAQAB"
+}

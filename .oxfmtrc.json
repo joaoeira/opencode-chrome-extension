@@ -1,0 +1,9 @@
+{
+  "ignorePatterns": [
+    "node_modules/**",
+    "dist/**",
+    ".local/**",
+    "tools/oxlint/anti-slop/**",
+    ".opencode/**"
+  ]
+}

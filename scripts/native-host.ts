@@ -1,39 +1,34 @@
 import { endianness } from "node:os";
-import { Effect, Logger, Schema } from "effect";
-import { NodeFileSystem } from "@effect/platform-node";
+import { Effect, Logger, Option, Result, Schema, Stdio, Stream } from "effect";
+import { NodeFileSystem, NodeStdio } from "@effect/platform-node";
 import { NativeRequest, NativeReply } from "../shared/native.ts";
 import { discover } from "./local-service.ts";
 
-// sendNativeMessage uses one process per request. Only framed JSON goes to stdout.
-const receive = Effect.callback<Buffer, Error>((resume) => {
-  let buffer = Buffer.alloc(0);
+// Chrome sends one length-prefixed JSON frame per native-host process.
+// filterMapEffect skips Result failures while more bytes arrive; malformed frames fail the Effect.
+const completeFrame = Effect.fn("NativeHost.completeFrame")(function* (buffer: Buffer) {
+  if (buffer.length < 4) return Result.fail(undefined);
+  const size = endianness() === "LE" ? buffer.readUInt32LE(0) : buffer.readUInt32BE(0);
 
-  const data = (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
+  if (size > 65536) return yield* Effect.fail(new Error("Native request exceeds 64 KiB."));
 
-    if (buffer.length < 4) return;
-    const size = endianness() === "LE" ? buffer.readUInt32LE(0) : buffer.readUInt32BE(0);
+  if (buffer.length < size + 4) return Result.fail(undefined);
 
-    if (size > 65536) {
-      resume(Effect.fail(new Error("Native request exceeds 64 KiB.")));
+  return Result.succeed(buffer.subarray(4, size + 4));
+});
 
-      return;
-    }
+const receive = Effect.gen(function* () {
+  const io = yield* Stdio.Stdio;
 
-    if (buffer.length >= size + 4) resume(Effect.succeed(buffer.subarray(4, size + 4)));
-  };
+  const frame = yield* io.stdin.pipe(
+    Stream.scan(Buffer.alloc(0), (buffer, chunk) => Buffer.concat([buffer, chunk])),
+    Stream.filterMapEffect(completeFrame),
+    Stream.runHead,
+  );
 
-  const end = () => resume(Effect.fail(new Error("Incomplete native request.")));
-  process.stdin.on("data", data);
-  process.stdin.once("end", end);
-  process.stdin.once("error", end);
+  if (Option.isNone(frame)) return yield* Effect.fail(new Error("Incomplete native request."));
 
-  return Effect.sync(() => {
-    process.stdin.off("data", data);
-    process.stdin.off("end", end);
-    process.stdin.off("error", end);
-    process.stdin.pause();
-  });
+  return frame.value;
 });
 
 await Effect.runPromise(
@@ -55,20 +50,17 @@ await Effect.runPromise(
       Effect.succeed(NativeReply.cases.Unavailable.make({ message: String(cause) })),
     ),
     Effect.flatMap((reply) =>
-      Effect.tryPromise(() => {
+      Effect.gen(function* () {
+        const io = yield* Stdio.Stdio;
         const body = Buffer.from(JSON.stringify(reply));
         const header = Buffer.alloc(4);
 
         if (endianness() === "LE") header.writeUInt32LE(body.length);
         else header.writeUInt32BE(body.length);
-
-        return new Promise<void>((resolve, reject) => {
-          process.stdout.write(Buffer.concat([header, body]), (error) =>
-            error ? reject(error) : resolve(),
-          );
-        });
+        yield* Stream.make(header, body).pipe(Stream.run(io.stdout({ endOnDone: true })));
       }),
     ),
+    Effect.provide(NodeStdio.layer),
     Effect.provide(NodeFileSystem.layer),
     Effect.provide(Logger.layer([Logger.withConsoleError(Logger.formatSimple)])),
   ),

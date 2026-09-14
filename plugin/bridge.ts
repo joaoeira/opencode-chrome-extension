@@ -1,4 +1,4 @@
-import { Clock, Context, Deferred, Effect, Layer, Option, Ref, Semaphore } from "effect";
+import { Clock, Context, Deferred, Effect, Layer, Option, SynchronizedRef } from "effect";
 import {
   BridgeError,
   type Job,
@@ -53,51 +53,64 @@ export class Bridge extends Context.Service<Bridge, Interface>()("ChromeBridge")
 export const bridgeLayer = Layer.effect(
   Bridge,
   Effect.gen(function* () {
-    const mutex = yield* Semaphore.make(1);
-    const state = yield* Ref.make<State>({ connection: Option.none(), pending: new Map() });
+    const emptyState = (): State => ({ connection: Option.none(), pending: new Map() });
+    const state = yield* SynchronizedRef.make(emptyState());
 
-    const failPending = Effect.fn("Bridge.failPending")(function* (message: string) {
-      const previous = yield* Ref.getAndSet(state, {
-        connection: Option.none(),
-        pending: new Map(),
-      });
-
-      yield* Effect.forEach(
-        previous.pending.values(),
+    const failPending = (snapshot: State, message: string) =>
+      Effect.forEach(
+        snapshot.pending.values(),
         (entry) => Deferred.fail(entry.result, new BridgeError({ message })),
         { discard: true },
       );
-    });
 
-    const current = Effect.fn("Bridge.current")(function* () {
-      const now = yield* Clock.currentTimeMillis;
-      const snapshot = yield* Ref.get(state);
+    const expireConnection = SynchronizedRef.modifyEffect(state, (snapshot) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
 
-      if (Option.isNone(snapshot.connection)) {
-        return yield* Effect.fail(
-          new BridgeError({
-            message: "Open the Chrome sidebar to connect to this server first.",
-          }),
-        );
-      }
+        const expired =
+          Option.isSome(snapshot.connection) && now - snapshot.connection.value.lastSeen > 8000;
 
-      if (now - snapshot.connection.value.lastSeen > 8000) {
-        yield* failPending("Chrome sidebar disconnected. Reconnect it before reading a page.");
+        if (!expired) return [false, snapshot] as const;
+        yield* failPending(snapshot, "Chrome connection expired. Reconnect the sidebar.");
 
-        return yield* Effect.fail(
-          new BridgeError({ message: "Chrome connection expired. Reconnect the sidebar." }),
-        );
-      }
+        return [true, emptyState()] as const;
+      }),
+    );
 
-      return snapshot.connection.value;
-    });
+    // Commit expiry separately: a rejected operation must not restore expired state.
+    // Each transition then validates the current connection under the ref's lock.
+    const update = <A>(
+      transition: (snapshot: State) => Effect.Effect<readonly [A, State], BridgeError>,
+    ) =>
+      Effect.gen(function* () {
+        if (yield* expireConnection) {
+          return yield* Effect.fail(
+            new BridgeError({ message: "Chrome connection expired. Reconnect the sidebar." }),
+          );
+        }
 
-    const owned = Effect.fn("Bridge.owned")(function* (clientId: string) {
-      const connection = yield* current();
+        return yield* SynchronizedRef.modifyEffect(state, transition);
+      });
+
+    const current = (snapshot: State) =>
+      Option.match(snapshot.connection, {
+        onNone: () =>
+          Effect.fail(
+            new BridgeError({
+              message: "Open the Chrome sidebar to connect to this server first.",
+            }),
+          ),
+        onSome: Effect.succeed,
+      });
+
+    const owned = Effect.fn("Bridge.owned")(function* (snapshot: State, clientId: string) {
+      const connection = yield* current(snapshot);
 
       if (connection.clientId !== clientId) {
         return yield* Effect.fail(
-          new BridgeError({ message: "Another sidebar owns this server's browser connection." }),
+          new BridgeError({
+            message: "Another sidebar owns this server's browser connection.",
+          }),
         );
       }
 
@@ -105,7 +118,11 @@ export const bridgeLayer = Layer.effect(
     });
 
     yield* Effect.addFinalizer(() =>
-      mutex.withPermits(1)(failPending("OpenCode unloaded the browser plugin.")),
+      SynchronizedRef.updateEffect(state, (snapshot) =>
+        failPending(snapshot, "OpenCode unloaded the browser plugin.").pipe(
+          Effect.as(emptyState()),
+        ),
+      ),
     );
 
     const request = Effect.fn("Bridge.request")(function* (
@@ -113,10 +130,9 @@ export const bridgeLayer = Layer.effect(
       request: BrowserRequest,
     ) {
       return yield* Effect.acquireUseRelease(
-        mutex.withPermits(1)(
+        update((snapshot: State) =>
           Effect.gen(function* () {
-            yield* current();
-            const snapshot = yield* Ref.get(state);
+            yield* current(snapshot);
 
             if (snapshot.pending.size >= 16) {
               return yield* Effect.fail(
@@ -126,106 +142,140 @@ export const bridgeLayer = Layer.effect(
 
             const id = crypto.randomUUID();
             const result = yield* Deferred.make<Reply, BridgeError>();
-            const job = { id, sessionId, request };
             const pending = new Map(snapshot.pending);
-            pending.set(id, { job, result });
-            yield* Ref.set(state, { ...snapshot, pending });
+            pending.set(id, { job: { id, sessionId, request }, result });
 
-            return { id, result };
+            return [
+              { id, result },
+              { ...snapshot, pending },
+            ] as const;
           }),
         ),
         ({ result }) =>
           Deferred.await(result).pipe(
-            Effect.timeout(deadlineFor(request)),
-            Effect.catchTag("TimeoutError", () =>
-              Effect.fail(
-                new BridgeError({ message: "Chrome did not answer before the request deadline." }),
-              ),
-            ),
-          ),
-        ({ id }) =>
-          mutex.withPermits(1)(
-            Ref.update(state, (value) => {
-              const next = new Map(value.pending);
-              next.delete(id);
-
-              return { ...value, pending: next };
+            Effect.timeoutOrElse({
+              duration: deadlineFor(request),
+              orElse: () =>
+                Effect.fail(
+                  new BridgeError({
+                    message: "Chrome did not answer before the request deadline.",
+                  }),
+                ),
             }),
           ),
+        ({ id }) =>
+          SynchronizedRef.update(state, (snapshot) => {
+            const pending = new Map(snapshot.pending);
+            pending.delete(id);
+
+            return { ...snapshot, pending };
+          }),
       );
     });
 
     return Bridge.of({
       isActive: Effect.fn("Bridge.isActive")((sessionId) =>
-        current().pipe(
-          Effect.map((connection) => connection.sessionId === sessionId),
-          Effect.catchTag("BridgeError", () => Effect.succeed(false)),
-          mutex.withPermits(1),
+        update((snapshot: State) =>
+          Effect.gen(function* () {
+            const connection = yield* current(snapshot);
+
+            return [connection.sessionId === sessionId, snapshot] as const;
+          }),
+        ).pipe(Effect.catchTag("BridgeError", () => Effect.succeed(false))),
+      ),
+      claim: Effect.fn("Bridge.claim")((clientId, sessionId) =>
+        Effect.andThen(
+          expireConnection,
+          SynchronizedRef.modifyEffect(state, (snapshot: State) =>
+            Effect.gen(function* () {
+              if (
+                Option.isSome(snapshot.connection) &&
+                snapshot.connection.value.clientId !== clientId
+              ) {
+                return yield* Effect.fail(
+                  new BridgeError({
+                    message: "Close the other sidebar before connecting this one.",
+                  }),
+                );
+              }
+
+              yield* failPending(
+                snapshot,
+                "The browser connection restarted. Request the page again.",
+              );
+              const now = yield* Clock.currentTimeMillis;
+
+              return [
+                undefined,
+                {
+                  connection: Option.some({ clientId, sessionId, lastSeen: now }),
+                  pending: new Map(),
+                },
+              ] as const;
+            }),
+          ),
         ),
       ),
-      claim: Effect.fn("Bridge.claim")(function* (clientId, sessionId) {
-        const now = yield* Clock.currentTimeMillis;
-        const snapshot = yield* Ref.get(state);
+      poll: Effect.fn("Bridge.poll")((clientId, sessionId) =>
+        update((snapshot: State) =>
+          Effect.gen(function* () {
+            const connection = yield* owned(snapshot, clientId);
+            let pending = snapshot.pending;
 
-        if (
-          Option.isSome(snapshot.connection) &&
-          now - snapshot.connection.value.lastSeen <= 8000 &&
-          snapshot.connection.value.clientId !== clientId
-        ) {
-          return yield* Effect.fail(
-            new BridgeError({
-              message: "Close the other sidebar before connecting this one.",
-            }),
-          );
-        }
+            if (sessionId !== connection.sessionId) {
+              yield* failPending(
+                snapshot,
+                "The Chrome sidebar switched sessions. Request browser access from the visible session.",
+              );
+              pending = new Map();
+            }
 
-        yield* failPending("The browser connection restarted. Request the page again.");
-        yield* Ref.set(state, {
-          connection: Option.some({ clientId, lastSeen: now, sessionId }),
-          pending: new Map(),
-        });
-      }, mutex.withPermits(1)),
-      poll: Effect.fn("Bridge.poll")(function* (clientId, sessionId) {
-        const connection = yield* owned(clientId);
+            const now = yield* Clock.currentTimeMillis;
 
-        if (sessionId !== connection.sessionId) {
-          yield* failPending(
-            "The Chrome sidebar switched sessions. Request browser access from the visible session.",
-          );
-        }
+            const next = {
+              connection: Option.some({ ...connection, sessionId, lastSeen: now }),
+              pending,
+            };
 
-        const now = yield* Clock.currentTimeMillis;
-        const snapshot = yield* Ref.get(state);
-        yield* Ref.set(state, {
-          ...snapshot,
-          connection: Option.some({
-            ...connection,
-            lastSeen: now,
-            sessionId,
+            return [Array.from(pending.values(), (entry) => entry.job), next] as const;
           }),
-        });
+        ),
+      ),
+      complete: Effect.fn("Bridge.complete")((clientId, id, reply) =>
+        update((snapshot: State) =>
+          Effect.gen(function* () {
+            yield* owned(snapshot, clientId);
+            const pending = snapshot.pending.get(id);
 
-        return Array.from(snapshot.pending.values(), (entry) => entry.job);
-      }, mutex.withPermits(1)),
-      complete: Effect.fn("Bridge.complete")(function* (clientId, id, reply) {
-        yield* owned(clientId);
-        const snapshot = yield* Ref.get(state);
-        const pending = snapshot.pending.get(id);
+            if (pending) {
+              if (Reply.guards.Failure(reply)) {
+                yield* Deferred.fail(
+                  pending.result,
+                  new BridgeError(
+                    reply.code
+                      ? { message: reply.message, code: reply.code }
+                      : { message: reply.message },
+                  ),
+                );
+              } else {
+                yield* Deferred.succeed(pending.result, reply);
+              }
+            }
 
-        if (!pending) return;
+            return [undefined, snapshot] as const;
+          }),
+        ),
+      ),
+      release: Effect.fn("Bridge.release")((clientId) =>
+        update((snapshot: State) =>
+          Effect.gen(function* () {
+            yield* owned(snapshot, clientId);
+            yield* failPending(snapshot, "Chrome sidebar disconnected.");
 
-        yield* Reply.match(reply, {
-          Read: () => Deferred.succeed(pending.result, reply),
-          ReadPdf: () => Deferred.succeed(pending.result, reply),
-          List: () => Deferred.succeed(pending.result, reply),
-          Failure: ({ message, code }) =>
-            Deferred.fail(pending.result, new BridgeError(code ? { message, code } : { message })),
-        });
-      }, mutex.withPermits(1)),
-      release: Effect.fn("Bridge.release")(function* (clientId) {
-        yield* owned(clientId);
-        yield* failPending("Chrome sidebar disconnected.");
-      }, mutex.withPermits(1)),
+            return [undefined, emptyState()] as const;
+          }),
+        ),
+      ),
       read: Effect.fn("Bridge.read")(function* (sessionId, input = {}) {
         const reply = yield* request(sessionId, BrowserRequest.cases.Read.make(input));
 

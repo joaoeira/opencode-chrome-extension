@@ -340,7 +340,11 @@ test("browser tools follow the sidebar session and deliver full content across p
         .find((tool) => tool.function.name === "browser_read_pdf")?.function.parameters,
     ).toMatchObject({
       type: "object",
-      properties: { tabId: { type: "integer" }, documentId: { type: "string" } },
+      properties: {
+        tabId: { type: "integer", minimum: 0 },
+        documentId: { type: "string", maxLength: 128 },
+        pages: { type: "array", minItems: 1, maxItems: 20 },
+      },
     });
     await frame.evaluate(() => {
       history.pushState({}, "", "/");

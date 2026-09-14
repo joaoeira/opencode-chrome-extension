@@ -20,7 +20,13 @@ export const Tab = Schema.Struct({ ...Target.fields, active: Schema.Boolean });
 
 export interface Tab extends Schema.Schema.Type<typeof Tab> {}
 
-export const ReadInput = Schema.Struct({ tabId: Schema.optional(Target.fields.tabId) });
+export const ReadInput = Schema.Struct({
+  tabId: Schema.optionalKey(
+    Target.fields.tabId.annotate({
+      description: "Tab ID from browser_list_tabs. Omit for the active tab.",
+    }),
+  ),
+});
 
 export interface ReadInput extends Schema.Schema.Type<typeof ReadInput> {}
 

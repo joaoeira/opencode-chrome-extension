@@ -38,8 +38,18 @@ export const PdfPages = Schema.Array(PdfPageNumber).check(
 );
 
 const PdfSelection = Schema.Struct({
-  pages: Schema.optionalKey(PdfPages),
-  cursor: Schema.optionalKey(PdfCursor),
+  pages: Schema.optionalKey(
+    PdfPages.annotate({
+      description:
+        "Physical PDF pages, starting at 1, read in document order. Use pages or cursor, never both.",
+    }),
+  ),
+  cursor: Schema.optionalKey(
+    PdfCursor.annotate({
+      description:
+        "Continuation token returned for this documentId. Cannot be combined with pages or tabId.",
+    }),
+  ),
 });
 
 export const ReadPdfDocumentInput = Schema.Struct({
@@ -55,8 +65,18 @@ type PdfTarget =
 
 export const ReadPdfInput = Schema.Struct({
   ...PdfSelection.fields,
-  documentId: Schema.optionalKey(PdfDocumentId),
-  tabId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  documentId: Schema.optionalKey(
+    PdfDocumentId.annotate({
+      description:
+        "Snapshot ID from an earlier PDF read. Use instead of tabId for subsequent reads.",
+    }),
+  ),
+  tabId: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+      description:
+        "Tab ID from browser_list_tabs. Reads the PDF without activating its tab. Cannot be combined with documentId or cursor.",
+    }),
+  ),
 }).pipe(
   Schema.refine(
     (input): input is typeof input & PdfTarget =>
@@ -66,6 +86,15 @@ export const ReadPdfInput = Schema.Struct({
     {
       message:
         "Supply exactly one of tabId or documentId. A cursor requires documentId, without tabId.",
+      toJsonSchema: () => ({
+        oneOf: [
+          {
+            required: ["tabId"],
+            not: { anyOf: [{ required: ["documentId"] }, { required: ["cursor"] }] },
+          },
+          { required: ["documentId"], not: { required: ["tabId"] } },
+        ],
+      }),
     },
   ),
 );

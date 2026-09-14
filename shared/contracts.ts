@@ -28,11 +28,20 @@ export const ReadResult = Schema.Union([Page, PdfDocument]);
 
 export type ReadResult = typeof ReadResult.Type;
 
-export const BrowserRequest = Schema.TaggedUnion({
-  Read: ReadInput.fields,
-  List: {},
-  ReadPdf: ReadPdfInput.fields,
-});
+// Reapply the input refinement after adding the tag; spreading fields alone loses checks.
+const ReadPdfRequest = Schema.TaggedStruct("ReadPdf", ReadPdfInput.schema.fields).pipe(
+  Schema.refine(
+    (request): request is ReadPdfInput & { readonly _tag: "ReadPdf" } =>
+      Schema.is(ReadPdfInput)(request),
+    { message: "Invalid PDF target: use tabId or documentId; a cursor requires documentId." },
+  ),
+);
+
+export const BrowserRequest = Schema.Union([
+  Schema.TaggedStruct("Read", ReadInput.fields),
+  Schema.TaggedStruct("List", {}),
+  ReadPdfRequest,
+]).pipe(Schema.toTaggedUnion("_tag"));
 
 export type BrowserRequest = typeof BrowserRequest.Type;
 

@@ -5,7 +5,7 @@ import {
   PdfError,
   PdfPages,
   pdfLimits,
-  type ReadPdfInput,
+  type ReadPdfDocumentInput,
 } from "../shared/pdf.ts";
 
 const Position = Schema.Struct({
@@ -45,7 +45,9 @@ const decodeCursor = Effect.fn("PdfCursor.decode")(function* (
 
 export const encodeCursor = (position: Position) => PdfCursor.make(btoa(JSON.stringify(position)));
 
-export const positionFor = Effect.fn("PdfCursor.positionFor")(function* (input: ReadPdfInput) {
+export const positionFor = Effect.fn("PdfCursor.positionFor")(function* (
+  input: ReadPdfDocumentInput,
+) {
   if (input.pages && input.cursor)
     return yield* Effect.fail(
       new PdfError({

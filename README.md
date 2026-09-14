@@ -89,13 +89,13 @@ On macOS, a filesystem permission prompt may appear if the checkout is in Docume
 
 ## Browser tools
 
-| Tool                | Arguments                                                                          | Result                                                                                                         |
-| ------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `browser_list_tabs` | `{}`                                                                               | Tabs in the sidebar's window, in tab-strip order: `tabId`, `title`, `url`, and `active`.                       |
-| `browser_read_page` | `{}` or `{ "tabId": 123 }`                                                         | Full HTML Markdown, or PDF metadata (`type`, `documentId`, `tabId`, `title`, `url`, `pageCount`) without text. |
-| `browser_read_pdf`  | `{ "documentId": "…", "pages": [1, 3] }` or `{ "documentId": "…", "cursor": "…" }` | Selected PDF text with source pages and `nextCursor`.                                                          |
+| Tool                | Arguments                                                                                                                | Result                                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `browser_list_tabs` | `{}`                                                                                                                     | Tabs in the sidebar's window, in tab-strip order: `tabId`, `title`, `url`, and `active`.                       |
+| `browser_read_page` | `{}` or `{ "tabId": 123 }`                                                                                               | Full HTML Markdown, or PDF metadata (`type`, `documentId`, `tabId`, `title`, `url`, `pageCount`) without text. |
+| `browser_read_pdf`  | `{ "tabId": 123, "pages": [1, 3] }`, `{ "documentId": "…", "pages": [1, 3] }`, or `{ "documentId": "…", "cursor": "…" }` | PDF metadata and selected text with source pages and `nextCursor`.                                             |
 
-Omit `tabId` to read the active tab at the time of the call. Pass an ID from the tab listing to read a specific tab without switching to it. A closed tab or a tab in another window returns an error; it never falls back to a different tab.
+For `browser_read_page`, omit `tabId` to read the active tab at the time of the call. Pass an ID from the tab listing to read a specific tab without switching to it. `browser_read_pdf` requires either `tabId` or `documentId`. A closed tab or a tab in another window returns an error; it never falls back to a different tab.
 
 A page result looks like this:
 
@@ -112,11 +112,13 @@ HTML results have no character cap or `truncated` field. The plugin also bypasse
 
 ### Reading PDFs
 
-`browser_read_page` identifies a top-level PDF and returns metadata only. The model then calls `browser_read_pdf` with that `documentId` and either physical page numbers (starting at 1), or a returned cursor. Printed page labels can differ from physical page numbers. With neither `pages` nor `cursor`, reading begins at page 1 and continues sequentially.
+The model can go directly from `browser_list_tabs` to `browser_read_pdf({ "tabId": 123, "pages": [1, 3] })`. This opens or reuses a snapshot of the PDF and returns its `documentId`, metadata, and selected text. Use that `documentId` for subsequent page requests or cursor continuations; repeating a `tabId` request reuses the unexpired snapshot while its session, tab, Chrome document, and URL still match. Reloading or navigating the tab opens a new snapshot. A non-PDF tab returns an error directing the model to `browser_read_page`.
+
+`browser_read_page` remains useful when the content type is unknown: it identifies a top-level PDF and returns metadata only, including a `documentId` usable by `browser_read_pdf`. Supply exactly one of `tabId` or `documentId`; a cursor always requires `documentId`, without `tabId`. Page numbers are physical pages starting at 1, which can differ from printed page labels. With neither `pages` nor `cursor`, reading begins at page 1 and continues sequentially.
 
 ```json
 {
-  "documentId": "pdf-id-from-browser_read_page",
+  "documentId": "pdf-snapshot-id",
   "tabId": 123,
   "title": "Annual report",
   "url": "https://example.com/report.pdf",

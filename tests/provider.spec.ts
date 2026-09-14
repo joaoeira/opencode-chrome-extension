@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Config, Effect, Option, Schema } from "effect";
 import { pagedPdf } from "./pdf-fixture.ts";
-import { PdfDocument, PdfText, type ReadPdfInput } from "../shared/pdf.ts";
+import { PdfText, type ReadPdfInput } from "../shared/pdf.ts";
 import { Tab, type ReadInput } from "../shared/contracts.ts";
 
 const ModelRequest = Schema.Struct({
@@ -34,31 +34,49 @@ const nextToolCall = (body: typeof ModelRequest.Type, fixtureUrl: string) => {
 
   const messages = JSON.stringify(body.messages);
 
-  if (messages.includes("Read PDF page 4")) {
-    const recentTools = body.messages
-      .slice(body.messages.findLastIndex((message) => message.role === "user") + 1)
-      .filter((message) => message.role === "tool");
-
-    if (messages.includes("Read cached PDF again")) {
-      if (recentTools.length > 0) return null;
-    } else if (
-      results.some((message) =>
-        Option.isSome(Schema.decodeUnknownOption(Schema.fromJsonString(PdfText))(message.content)),
-      )
-    )
-      return null;
-
+  if (messages.includes("Read PDF pages 1 and 4")) {
     const document = results
       .flatMap((message) =>
+        Option.toArray(Schema.decodeUnknownOption(Schema.fromJsonString(PdfText))(message.content)),
+      )
+      .at(-1);
+
+    if (messages.includes("Read cached PDF again")) {
+      const recentTools = body.messages
+        .slice(body.messages.findLastIndex((message) => message.role === "user") + 1)
+        .filter((message) => message.role === "tool");
+
+      if (recentTools.length > 0) return null;
+
+      if (!document) throw new Error("Expected an earlier PDF snapshot");
+
+      return call("browser_read_pdf", { documentId: document.documentId, pages: [4] });
+    }
+
+    if (document) {
+      if (document.nextCursor)
+        return call("browser_read_pdf", {
+          documentId: document.documentId,
+          cursor: document.nextCursor,
+        });
+
+      return null;
+    }
+
+    const tabs = results
+      .flatMap((message) =>
         Option.toArray(
-          Schema.decodeUnknownOption(Schema.fromJsonString(PdfDocument))(message.content),
+          Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Tab)))(message.content),
         ),
       )
       .at(-1);
 
-    if (document) return call("browser_read_pdf", { documentId: document.documentId, pages: [4] });
+    if (!tabs) return call("browser_list_tabs", {});
+    const tab = tabs.find((tab) => tab.url === new URL("/pdf", fixtureUrl).href);
 
-    return call("browser_read_page", {});
+    if (!tab) throw new Error("Expected the PDF tab in the tool result");
+
+    return call("browser_read_pdf", { tabId: tab.tabId, pages: [1, 4] });
   }
 
   if (!messages.includes("What page am I on?") || results.length >= 2) return null;
@@ -293,7 +311,7 @@ test("browser tools follow the sidebar session and deliver full content across p
     expect(await visibleTools(first)).toEqual([]);
     await target.goto(new URL("/pdf", fixtureUrl).href);
     await target.bringToFront();
-    await post(`session/${second}/prompt`, { text: "Read PDF page 4" });
+    await post(`session/${second}/prompt`, { text: "Read PDF pages 1 and 4" });
     await expect
       .poll(
         () =>
@@ -308,21 +326,22 @@ test("browser tools follow the sidebar session and deliver full content across p
       )
       .toBe(true);
 
-    const metadata = requests
+    const pdfResult = requests
       .flatMap((request) => request.messages)
       .flatMap((message) =>
-        Option.toArray(
-          Schema.decodeUnknownOption(Schema.fromJsonString(PdfDocument))(message.content),
-        ),
+        Option.toArray(Schema.decodeUnknownOption(Schema.fromJsonString(PdfText))(message.content)),
       )
       .at(-1);
 
-    expect(metadata).toMatchObject({ type: "pdf", pageCount: 4 });
+    expect(pdfResult).toMatchObject({ pageCount: 4, pages: [1, 4], nextCursor: null });
     expect(
       requests
         .flatMap((request) => request.tools ?? [])
         .find((tool) => tool.function.name === "browser_read_pdf")?.function.parameters,
-    ).toMatchObject({ type: "object", required: ["documentId"] });
+    ).toMatchObject({
+      type: "object",
+      properties: { tabId: { type: "integer" }, documentId: { type: "string" } },
+    });
     await frame.evaluate(() => {
       history.pushState({}, "", "/");
       window.dispatchEvent(new PopStateEvent("popstate"));

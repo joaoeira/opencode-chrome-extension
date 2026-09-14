@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, Schema } from "effect";
 import { BrowserError, Page, Tab, type ReadInput, type ReadResult } from "../shared/contracts.ts";
-import { PdfDocuments } from "./pdf.ts";
-import { type PdfError, type PdfText, type ReadPdfInput } from "../shared/pdf.ts";
+import { PdfDocuments, withPdfDeadline } from "./pdf.ts";
+import { PdfError, type PdfText, type ReadPdfInput } from "../shared/pdf.ts";
 
 // The separately bundled extractor is installed in Chrome's isolated script world.
 declare const OpenCodePage: typeof import("./extract.ts");
@@ -106,7 +106,21 @@ const inspectTab = Effect.fn("Browser.inspectTab")(function* (windowId: number, 
       }),
   });
 
-  return { title: tab.title ?? "", url: tab.url, tabId, probe };
+  if (!probe?.documentId)
+    return yield* Effect.fail(
+      new BrowserError({ message: "The page disappeared during inspection." }),
+    );
+
+  return {
+    contentType: probe.result,
+    source: {
+      title: tab.title ?? "",
+      url: tab.url,
+      tabId,
+      windowId,
+      chromeDocumentId: probe.documentId,
+    },
+  };
 }, withBrowserDeadline);
 
 export const browserLayer = Layer.effect(
@@ -129,7 +143,28 @@ export const browserLayer = Layer.effect(
     }
 
     return Browser.of({
-      readPdf: pdf.read,
+      readPdf: Effect.fn("Browser.readPdf")(
+        function* (sessionId, input) {
+          if (input.tabId !== undefined) {
+            const tab = yield* inspectTab(windowId, { tabId: input.tabId });
+
+            if (tab.contentType !== "application/pdf")
+              return yield* Effect.fail(
+                new PdfError({
+                  code: "pdf_tab_not_pdf",
+                  message: "This tab is not a PDF. Use browser_read_page to read its content.",
+                }),
+              );
+
+            return yield* pdf.readTab(sessionId, tab.source, input.pages);
+          }
+
+          return yield* pdf.read(sessionId, input);
+        },
+        // Include inspection in the 65-second budget to leave margin below the
+        // 70-second bridge deadline; inspection plus a separate PDF budget would not.
+        withPdfDeadline,
+      ),
       forgetSessionDocuments: pdf.forgetSessionDocuments,
       list: Effect.fn("Browser.list")(function* () {
         const tabs = yield* Effect.tryPromise({
@@ -161,19 +196,13 @@ export const browserLayer = Layer.effect(
         );
       }),
       read: Effect.fn("Browser.read")(function* (sessionId, input) {
-        const { title, url, tabId, probe } = yield* inspectTab(windowId, input);
+        const tab = yield* inspectTab(windowId, input);
 
-        if (probe?.result === "application/pdf") {
-          return yield* pdf.open(sessionId, {
-            tabId,
-            windowId,
-            chromeDocumentId: probe.documentId,
-            title,
-            url,
-          });
+        if (tab.contentType === "application/pdf") {
+          return yield* pdf.open(sessionId, tab.source);
         }
 
-        return yield* readHtml(tabId);
+        return yield* readHtml(tab.source.tabId);
       }),
     });
   }),

@@ -37,13 +37,40 @@ export const PdfPages = Schema.Array(PdfPageNumber).check(
   Schema.isMaxLength(pdfLimits.selectedPages),
 );
 
-export const ReadPdfInput = Schema.Struct({
-  documentId: PdfDocumentId,
+const PdfSelection = Schema.Struct({
   pages: Schema.optionalKey(PdfPages),
   cursor: Schema.optionalKey(PdfCursor),
 });
 
-export interface ReadPdfInput extends Schema.Schema.Type<typeof ReadPdfInput> {}
+export const ReadPdfDocumentInput = Schema.Struct({
+  ...PdfSelection.fields,
+  documentId: PdfDocumentId,
+});
+
+export interface ReadPdfDocumentInput extends Schema.Schema.Type<typeof ReadPdfDocumentInput> {}
+
+type PdfTarget =
+  | { readonly tabId: number; readonly documentId?: never; readonly cursor?: never }
+  | { readonly documentId: PdfDocumentId; readonly tabId?: never };
+
+export const ReadPdfInput = Schema.Struct({
+  ...PdfSelection.fields,
+  documentId: Schema.optionalKey(PdfDocumentId),
+  tabId: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+}).pipe(
+  Schema.refine(
+    (input): input is typeof input & PdfTarget =>
+      input.tabId === undefined
+        ? input.documentId !== undefined
+        : input.documentId === undefined && input.cursor === undefined,
+    {
+      message:
+        "Supply exactly one of tabId or documentId. A cursor requires documentId, without tabId.",
+    },
+  ),
+);
+
+export type ReadPdfInput = typeof ReadPdfInput.Type;
 
 export const PdfDocument = Schema.Struct({
   type: Schema.Literal("pdf"),
@@ -76,6 +103,7 @@ export const PdfText = Schema.Struct({
 export interface PdfText extends Schema.Schema.Type<typeof PdfText> {}
 
 export const PdfErrorCode = Schema.Literals([
+  "pdf_tab_not_pdf",
   "pdf_unavailable",
   "pdf_document_expired",
   "pdf_document_changed",

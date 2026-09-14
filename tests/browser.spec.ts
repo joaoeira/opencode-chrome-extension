@@ -43,7 +43,7 @@ interface BrowserFixture {
   fixtureUrl: string;
   read: (input?: ReadInput) => Promise<Response>;
   list: () => Promise<Response>;
-  readPdf: (input: ReadPdfInput) => Promise<Response>;
+  readPdf: (input: typeof ReadPdfInput.Encoded) => Promise<Response>;
 }
 
 const test = base.extend<{ browserFixture: BrowserFixture }>({
@@ -126,7 +126,7 @@ const test = base.extend<{ browserFixture: BrowserFixture }>({
 
       const rpc = async (
         method: "read" | "list" | "readPdf",
-        input: ReadInput | ReadPdfInput = {},
+        input: ReadInput | typeof ReadPdfInput.Encoded = {},
       ) => {
         const endpoint = await Service.discover({ file: serviceFile });
 
@@ -432,6 +432,83 @@ test("contains invalid PDF selections and reports textless pages without pretend
   expect(result.nextCursor).toBeNull();
 });
 
+test("finishes concurrent direct PDF reads before their snapshots can be evicted", async ({
+  browserFixture: fixture,
+}) => {
+  for (let i = 0; i < 3; i++) {
+    const page = await fixture.context.newPage();
+    await page.goto(`${fixture.fixtureUrl}pdf`);
+  }
+
+  const tabs = (await listTabs(fixture)).filter((tab) => tab.url === `${fixture.fixtureUrl}pdf`);
+  expect(tabs).toHaveLength(3);
+
+  const results = await Promise.all(
+    tabs.map((tab) => readPdf(fixture, { tabId: tab.tabId, pages: [4] })),
+  );
+
+  expect(results.map((result) => result.tabId)).toEqual(tabs.map((tab) => tab.tabId));
+
+  for (const result of results) expect(result.text).toContain("FOURTH_PAGE_ONLY");
+});
+
+test("rejects ambiguous PDF targets before requiring a Chrome connection", async ({
+  browserFixture: fixture,
+}) => {
+  await fixture.panel.close();
+
+  for (const input of [
+    {},
+    { tabId: 1, documentId: "snapshot" },
+    { tabId: 1, cursor: "continuation" },
+  ]) {
+    const invalid = await fixture.readPdf(input);
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ type: "rpc.invalid_input" });
+  }
+});
+
+test("reuses PDF snapshots across entry points until the Chrome document changes", async ({
+  browserFixture: fixture,
+}) => {
+  await fixture.target.goto(`${fixture.fixtureUrl}pdf`);
+  const first = await openPdf(fixture);
+  const otherTab = await fixture.context.newPage();
+  await otherTab.goto(`${fixture.fixtureUrl}pdf`);
+  await otherTab.bringToFront();
+  const second = await openPdf(fixture);
+
+  const repeated = await readPdf(fixture, { tabId: first.tabId, pages: [4] });
+  expect(repeated.documentId).toBe(first.documentId);
+  // Re-reading the first tab must not consume another slot and evict the second PDF.
+  expect((await readPdf(fixture, { documentId: second.documentId, pages: [2] })).text).toContain(
+    "SECOND_PAGE_ONLY",
+  );
+
+  await fixture.target.reload();
+  const reloaded = await readPdf(fixture, { tabId: first.tabId, pages: [4] });
+  expect(reloaded.documentId).not.toBe(first.documentId);
+  expect(reloaded.text).toContain("FOURTH_PAGE_ONLY");
+});
+
+test("rejects a direct PDF read of HTML and can read the tab after it opens a PDF", async ({
+  browserFixture: fixture,
+}) => {
+  const tab = (await listTabs(fixture)).find((tab) => tab.url === fixture.fixtureUrl);
+
+  if (!tab) throw new Error("Expected fixture tab");
+  const invalid = await fixture.readPdf({ tabId: tab.tabId });
+  expect(invalid.status).toBe(400);
+  expect(await invalid.json()).toMatchObject({ data: { code: "pdf_tab_not_pdf" } });
+  await fixture.target.goto(`${fixture.fixtureUrl}pdf`);
+  const result = await readPdf(fixture, { tabId: tab.tabId, pages: [4] });
+  expect(result).toMatchObject({
+    tabId: tab.tabId,
+    pageCount: 4,
+    text: expect.stringContaining("FOURTH_PAGE_ONLY"),
+  });
+});
+
 test("keeps heartbeats alive during a slow PDF download without duplicating the job", async ({
   browserFixture: fixture,
 }) => {
@@ -495,7 +572,7 @@ test("retries result delivery without reading changed page content again", async
   expect(page.text).not.toContain("Replacement article");
 });
 
-test("reads a live blob PDF and contains revoked URL failures", async ({
+test("keeps an acquired blob PDF readable after its source URL is revoked", async ({
   browserFixture: fixture,
 }) => {
   const blob = await fixture.target.evaluate(
@@ -511,13 +588,9 @@ test("reads a live blob PDF and contains revoked URL failures", async ({
     "FOURTH_PAGE_ONLY",
   );
   await fixture.target.evaluate((url) => URL.revokeObjectURL(url), blob);
-  const reopened = await fixture.read();
-  expect(reopened.status).toBe(400);
-  expect(await reopened.json()).toMatchObject({ data: { code: "pdf_unavailable" } });
-  // The already-acquired snapshot remains readable while the PDF tab is unchanged.
-  expect((await readPdf(fixture, { documentId: document.documentId, pages: [2] })).text).toContain(
-    "SECOND_PAGE_ONLY",
-  );
+  const reopened = await readPdf(fixture, { tabId: document.tabId, pages: [2] });
+  expect(reopened.documentId).toBe(document.documentId);
+  expect(reopened.text).toContain("SECOND_PAGE_ONLY");
 });
 
 test("reports encrypted PDFs as password-required and recovers for another document", async ({

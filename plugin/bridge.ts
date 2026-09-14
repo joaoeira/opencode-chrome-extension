@@ -248,7 +248,11 @@ export const bridgeLayer = Layer.effect(
       readPdf: Effect.fn("Bridge.readPdf")(function* (sessionId, input) {
         const reply = yield* request(sessionId, BrowserRequest.cases.ReadPdf.make(input));
 
-        if (!Reply.guards.ReadPdf(reply) || reply.result.documentId !== input.documentId)
+        if (
+          !Reply.guards.ReadPdf(reply) ||
+          (input.documentId !== undefined && reply.result.documentId !== input.documentId) ||
+          (input.tabId !== undefined && reply.result.tabId !== input.tabId)
+        )
           return yield* Effect.fail(
             new BridgeError({ message: "Chrome returned an unexpected PDF document." }),
           );

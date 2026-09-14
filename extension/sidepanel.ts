@@ -1,10 +1,11 @@
-import { Effect, Fiber, Schema, Schedule, Option, Layer } from "effect";
+import { Effect, Fiber, Schema, Schedule, Layer, Ref } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { BrowserError, type Settings, localOrigin } from "../shared/contracts.ts";
 import { NativeReply, nativeHostName } from "../shared/native.ts";
 import { pdfLayer } from "./pdf.ts";
 import { browserLayer } from "./browser.ts";
 import { connect } from "./connection.ts";
+import { observeFrameSession } from "./sidebar-frame.ts";
 
 function element<T extends Element>(
   selector: string,
@@ -18,36 +19,6 @@ function element<T extends Element>(
 }
 
 const iframe = element("#opencode", HTMLIFrameElement);
-
-let settings: Settings | undefined;
-
-let sessionId: string | null = null;
-
-const FrameLocation = Schema.Struct({
-  type: Schema.Literal("opencode-chrome:location"),
-  pathname: Schema.String,
-});
-
-window.addEventListener("message", (event) => {
-  if (!settings || event.source !== iframe.contentWindow || event.origin !== settings.server)
-    return;
-  const decoded = Schema.decodeUnknownOption(FrameLocation)(event.data);
-
-  if (Option.isNone(decoded)) return;
-  const route = /^\/server\/([^/]+)\/session\/([^/]+)$/.exec(decoded.value.pathname);
-
-  const serverKey = btoa(settings.server)
-    .replace(/=+$/, "")
-    .replaceAll("+", "-")
-    .replaceAll("/", "_");
-
-  sessionId = route?.[1] === serverKey ? (route[2] ?? null) : null;
-});
-
-iframe.addEventListener("load", () => {
-  if (settings)
-    iframe.contentWindow?.postMessage("opencode-chrome:request-location", settings.server);
-});
 
 const resolveConnection = Effect.fn("Sidebar.discover")(function* () {
   const raw = yield* Effect.tryPromise({
@@ -74,34 +45,36 @@ const resolveConnection = Effect.fn("Sidebar.discover")(function* () {
   };
 
   yield* Effect.tryPromise(() => chrome.storage.session.set({ settings: normalized }));
-  yield* Effect.sync(() => {
-    const changed =
-      !settings ||
-      settings.server !== normalized.server ||
-      settings.password !== normalized.password;
-
-    settings = normalized;
-    iframe.hidden = false;
-
-    if (changed) {
-      sessionId = null;
-      iframe.src = normalized.server;
-    }
-  });
 
   return normalized;
 });
 
 const program = Effect.gen(function* () {
-  const selected = yield* resolveConnection();
-  yield* connect(selected, () => sessionId);
+  const previousSettings = yield* Ref.make<Settings | undefined>(undefined);
+
+  const connectOnce = Effect.gen(function* () {
+    const settings = yield* resolveConnection();
+    const selectedSession = yield* observeFrameSession(iframe, settings);
+    const previous = yield* Ref.getAndSet(previousSettings, settings);
+
+    iframe.hidden = false;
+
+    if (previous?.server !== settings.server || previous.password !== settings.password) {
+      iframe.src = settings.server;
+    }
+
+    yield* connect(settings, selectedSession);
+  }).pipe(Effect.scoped);
+
+  yield* connectOnce.pipe(
+    Effect.tapError((cause) => Effect.logError("Chrome sidebar connection failed", cause)),
+    Effect.retry(Schedule.spaced("3 seconds")),
+    Effect.catch((cause) => Effect.logError("Chrome sidebar connection stopped", cause)),
+  );
 }).pipe(
   Effect.scoped,
   Effect.provide(browserLayer.pipe(Layer.provide(pdfLayer))),
   Effect.provide(FetchHttpClient.layer),
-  Effect.tapError((cause) => Effect.logError("Chrome sidebar connection failed", cause)),
-  Effect.retry(Schedule.spaced("3 seconds")),
-  Effect.catch((cause) => Effect.logError("Chrome sidebar connection stopped", cause)),
 );
 
 const running = Effect.runFork(program);

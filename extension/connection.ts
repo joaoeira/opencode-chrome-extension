@@ -1,5 +1,5 @@
 import { OpenCode } from "@opencode/client/effect";
-import { Effect, FiberMap, Schedule, Semaphore } from "effect";
+import { Effect, FiberMap, Schedule, Semaphore, Stream, SubscriptionRef } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { type Settings, BrowserRequest, Reply, localOrigin } from "../shared/contracts.ts";
 import { PdfError } from "../shared/pdf.ts";
@@ -26,7 +26,7 @@ const clientFor = Effect.fn("Sidebar.client")(function* (settings: Settings) {
 
 export const connect = Effect.fn("Sidebar.connect")(function* (
   settings: Settings,
-  currentSession: () => string | null,
+  selectedSession: SubscriptionRef.SubscriptionRef<string | null>,
 ) {
   const browser = yield* Browser;
   const client = yield* clientFor(settings);
@@ -34,7 +34,8 @@ export const connect = Effect.fn("Sidebar.connect")(function* (
   const clientId = crypto.randomUUID();
   const options = { location: { directory: settings.directory } };
 
-  yield* rpc.claim({ clientId, sessionId: currentSession() }, options);
+  const initialSession = yield* SubscriptionRef.get(selectedSession);
+  yield* rpc.claim({ clientId, sessionId: initialSession }, options);
   yield* Effect.addFinalizer(() =>
     rpc.release({ clientId }, options).pipe(
       Effect.timeout("2 seconds"),
@@ -42,9 +43,7 @@ export const connect = Effect.fn("Sidebar.connect")(function* (
     ),
   );
 
-  const active = yield* FiberMap.make<string, void>();
   const execution = yield* Semaphore.make(4);
-  let connectedSession = currentSession();
 
   const execute = Effect.fn("Sidebar.execute")((sessionId: string, request: BrowserRequest) =>
     BrowserRequest.match(request, {
@@ -78,44 +77,47 @@ export const connect = Effect.fn("Sidebar.connect")(function* (
     ),
   );
 
-  const poll = Effect.gen(function* () {
-    const sessionId = currentSession();
+  const runSession = Effect.fn("Sidebar.runSession")(function* (sessionId: string | null) {
+    // The job scope closes before the document cache is cleared.
+    yield* Effect.addFinalizer(() => browser.forgetSessionDocuments);
+    const active = yield* FiberMap.make<string, void>();
 
-    if (sessionId !== connectedSession) {
-      yield* FiberMap.clear(active);
-      yield* browser.forgetSessionDocuments;
-      connectedSession = sessionId;
-    }
+    const poll = Effect.gen(function* () {
+      const jobs = yield* rpc.poll({ clientId, sessionId }, options);
 
-    const jobs = yield* rpc.poll({ clientId, sessionId }, options);
+      for (const [id] of active) {
+        if (!jobs.some((job) => job.id === id)) yield* FiberMap.remove(active, id);
+      }
 
-    for (const [id] of active) {
-      if (!jobs.some((job) => job.id === id)) yield* FiberMap.remove(active, id);
-    }
+      for (const job of jobs) {
+        yield* FiberMap.run(
+          active,
+          job.id,
+          Effect.gen(function* () {
+            const reply = yield* execute(job.sessionId, job.request);
 
-    for (const job of jobs) {
-      yield* FiberMap.run(
-        active,
-        job.id,
-        Effect.gen(function* () {
-          const reply = yield* execute(job.sessionId, job.request);
+            // Retain the result in this fiber while delivery retries. Re-polling must
+            // not extract again. Completion is idempotent; poll cancels the fiber
+            // when the server removes the job, including after a lost acknowledgement.
+            yield* rpc
+              .complete({ clientId, id: job.id, reply }, options)
+              .pipe(Effect.retry(Schedule.spaced("500 millis")));
+          }).pipe(Effect.catch((cause) => Effect.logError("Chrome job completion failed", cause))),
+          { onlyIfMissing: true },
+        );
+      }
+    });
 
-          if (currentSession() !== sessionId) return;
-          // Retain the result in this fiber while delivery retries. Re-polling must
-          // not extract again. Completion is idempotent; poll cancels the fiber
-          // when the server removes the job, including after a lost acknowledgement.
-          yield* rpc
-            .complete({ clientId, id: job.id, reply }, options)
-            .pipe(Effect.retry(Schedule.spaced("500 millis")));
-        }).pipe(Effect.catch((cause) => Effect.logError("Chrome job completion failed", cause))),
-        { onlyIfMissing: true },
-      );
-    }
-  });
+    // Polls retain pending requests server-side; a transient fetch failure loses no event.
+    yield* poll.pipe(
+      Effect.retry(Schedule.exponential("200 millis").pipe(Schedule.upTo({ times: 2 }))),
+      Effect.repeat(Schedule.spaced("1 second")),
+    );
+  }, Effect.scoped);
 
-  // Polls retain pending requests server-side; a transient fetch failure loses no event.
-  yield* poll.pipe(
-    Effect.retry(Schedule.exponential("200 millis").pipe(Schedule.upTo({ times: 2 }))),
-    Effect.repeat(Schedule.spaced("1 second")),
+  yield* SubscriptionRef.changes(selectedSession).pipe(
+    Stream.changes,
+    Stream.switchMap((sessionId) => Stream.fromEffect(runSession(sessionId))),
+    Stream.runDrain,
   );
 });

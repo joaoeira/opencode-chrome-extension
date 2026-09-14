@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { NodeFileSystem } from "@effect/platform-node";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
-import { Config, Effect, Schema } from "effect";
+import { Config, Effect, FileSystem, Schema } from "effect";
 import { configuration } from "./local-service.ts";
 import { nativeHostName } from "../shared/native.ts";
 
@@ -14,7 +14,8 @@ await Effect.runPromise(
       return yield* Effect.fail(new Error("Native host setup currently supports macOS and Linux."));
     }
 
-    const manifest = yield* Effect.tryPromise(() => readFile("extension/manifest.json", "utf8"));
+    const fs = yield* FileSystem.FileSystem;
+    const manifest = yield* fs.readFileString("extension/manifest.json");
 
     const { key } = yield* Schema.decodeUnknownEffect(
       Schema.fromJsonString(Schema.Struct({ key: Schema.String })),
@@ -49,30 +50,28 @@ await Effect.runPromise(
           );
 
     for (const directory of directories) {
-      yield* Effect.tryPromise(() => mkdir(directory, { recursive: true, mode: 0o700 }));
+      yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       const launcher = join(directory, `${nativeHostName}.sh`);
       const script = `#!/bin/sh\ncd ${quote(process.cwd())} || exit 1\nexport OPENCODE_CHROME_PORT=${quote(String(port))}\n${environment}\nexec ${quote(process.execPath)} ${quote(resolve("scripts/native-host.ts"))} "$@"\n`;
-      yield* Effect.tryPromise(() => writeFile(launcher, script, { mode: 0o700 }));
-      yield* Effect.tryPromise(() => chmod(launcher, 0o700));
-      yield* Effect.tryPromise(() =>
-        writeFile(
-          join(directory, `${nativeHostName}.json`),
-          JSON.stringify(
-            {
-              name: nativeHostName,
-              description: "Discover and start the local OpenCode sidebar server",
-              path: launcher,
-              type: "stdio",
-              allowed_origins: [`chrome-extension://${id}/`],
-            },
-            null,
-            2,
-          ),
-          { mode: 0o600 },
+      yield* fs.writeFileString(launcher, script, { mode: 0o700 });
+      yield* fs.chmod(launcher, 0o700);
+      yield* fs.writeFileString(
+        join(directory, `${nativeHostName}.json`),
+        JSON.stringify(
+          {
+            name: nativeHostName,
+            description: "Discover and start the local OpenCode sidebar server",
+            path: launcher,
+            type: "stdio",
+            allowed_origins: [`chrome-extension://${id}/`],
+          },
+          null,
+          2,
         ),
+        { mode: 0o600 },
       );
     }
 
     console.log(`Registered native helper for extension ${id}. Reload dist/extension in Chrome.`);
-  }),
+  }).pipe(Effect.provide(NodeFileSystem.layer)),
 );

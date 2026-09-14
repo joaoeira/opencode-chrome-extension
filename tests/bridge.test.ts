@@ -23,8 +23,8 @@ it.effect("routes a read to the sidebar and returns its result", () =>
 
     if (!job) throw new Error("Expected queued job");
     expect(job.sessionId).toBe("session-1");
-    yield* bridge.complete("sidebar", job.id, Reply.cases.Success.make({ page }));
-    expect((yield* Fiber.join(read)).text).toBe("Hello from Chrome");
+    yield* bridge.complete("sidebar", job.id, Reply.cases.Read.make({ page }));
+    expect(yield* Fiber.join(read)).toMatchObject({ text: "Hello from Chrome" });
     expect(yield* bridge.poll("sidebar", null)).toEqual([]);
   }).pipe(Effect.provide(bridgeLayer)),
 );
@@ -48,11 +48,11 @@ it.effect("rejects replies from the wrong connection", () =>
 
     if (!job) throw new Error("Expected queued job");
     expect(
-      (yield* Effect.flip(bridge.complete("second", job.id, Reply.cases.Success.make({ page }))))
+      (yield* Effect.flip(bridge.complete("second", job.id, Reply.cases.Read.make({ page }))))
         .message,
     ).toContain("Another sidebar");
-    yield* bridge.complete("first", job.id, Reply.cases.Success.make({ page }));
-    expect((yield* Fiber.join(read)).text).toBe("Hello from Chrome");
+    yield* bridge.complete("first", job.id, Reply.cases.Read.make({ page }));
+    expect(yield* Fiber.join(read)).toMatchObject({ text: "Hello from Chrome" });
   }).pipe(Effect.provide(bridgeLayer)),
 );
 
@@ -90,13 +90,13 @@ it.effect("times out and removes an unanswered read", () =>
       .read("session")
       .pipe(Effect.flip, Effect.forkScoped({ startImmediately: true }));
 
-    for (const delay of [6000, 6000, 6000]) {
+    for (const delay of Array.from({ length: 11 }, () => 6000)) {
       yield* TestClock.adjust(delay);
       yield* bridge.poll("sidebar", null);
     }
 
-    yield* TestClock.adjust("2 seconds");
-    expect((yield* Fiber.join(read)).message).toContain("20 seconds");
+    yield* TestClock.adjust("4 seconds");
+    expect((yield* Fiber.join(read)).message).toContain("deadline");
     expect(yield* bridge.poll("sidebar", null)).toHaveLength(0);
   }).pipe(Effect.provide(bridgeLayer)),
 );
@@ -131,15 +131,15 @@ it.effect("delivers out-of-order replies to their original callers", () =>
     yield* bridge.complete(
       "sidebar",
       secondJob.id,
-      Reply.cases.Success.make({ page: { ...page, text: "second result" } }),
+      Reply.cases.Read.make({ page: { ...page, text: "second result" } }),
     );
     yield* bridge.complete(
       "sidebar",
       firstJob.id,
-      Reply.cases.Success.make({ page: { ...page, text: "first result" } }),
+      Reply.cases.Read.make({ page: { ...page, text: "first result" } }),
     );
-    expect((yield* Fiber.join(first)).text).toBe("first result");
-    expect((yield* Fiber.join(second)).text).toBe("second result");
+    expect(yield* Fiber.join(first)).toMatchObject({ text: "first result" });
+    expect(yield* Fiber.join(second)).toMatchObject({ text: "second result" });
   }).pipe(Effect.provide(bridgeLayer)),
 );
 
@@ -155,7 +155,7 @@ it.effect("rejects a page from the wrong tab instead of returning it to the call
     const [job] = yield* bridge.poll("sidebar", null);
 
     if (!job) throw new Error("Expected queued read");
-    yield* bridge.complete("sidebar", job.id, Reply.cases.Success.make({ page }));
+    yield* bridge.complete("sidebar", job.id, Reply.cases.Read.make({ page }));
     expect((yield* Fiber.join(read)).message).toContain("different tab");
     expect(yield* bridge.poll("sidebar", null)).toHaveLength(0);
   }).pipe(Effect.provide(bridgeLayer)),

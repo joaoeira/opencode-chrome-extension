@@ -2,12 +2,17 @@ import { Clock, Context, Deferred, Effect, Layer, Option, Ref, Semaphore } from 
 import {
   BridgeError,
   type Job,
-  type Page,
+  type ReadResult,
   Reply,
   BrowserRequest,
   type ReadInput,
   type Tab,
 } from "../shared/contracts.ts";
+import { pdfBridgeTimeoutMs, type PdfText, type ReadPdfInput } from "../shared/pdf.ts";
+
+// Read may discover a PDF only after Chrome inspects the tab. Allow the PDF deadline.
+const deadlineFor = (request: BrowserRequest) =>
+  BrowserRequest.guards.List(request) ? 20_000 : pdfBridgeTimeoutMs;
 
 interface Pending {
   readonly job: Job;
@@ -38,8 +43,9 @@ interface Interface {
     reply: Reply,
   ) => Effect.Effect<void, BridgeError>;
   readonly release: (clientId: string) => Effect.Effect<void, BridgeError>;
+  readonly readPdf: (sessionId: string, input: ReadPdfInput) => Effect.Effect<PdfText, BridgeError>;
   readonly list: (sessionId: string) => Effect.Effect<ReadonlyArray<Tab>, BridgeError>;
-  readonly read: (sessionId: string, input?: ReadInput) => Effect.Effect<Page, BridgeError>;
+  readonly read: (sessionId: string, input?: ReadInput) => Effect.Effect<ReadResult, BridgeError>;
 }
 
 export class Bridge extends Context.Service<Bridge, Interface>()("ChromeBridge") {}
@@ -130,9 +136,11 @@ export const bridgeLayer = Layer.effect(
         ),
         ({ result }) =>
           Deferred.await(result).pipe(
-            Effect.timeout("20 seconds"),
+            Effect.timeout(deadlineFor(request)),
             Effect.catchTag("TimeoutError", () =>
-              Effect.fail(new BridgeError({ message: "Chrome did not answer within 20 seconds." })),
+              Effect.fail(
+                new BridgeError({ message: "Chrome did not answer before the request deadline." }),
+              ),
             ),
           ),
         ({ id }) =>
@@ -207,9 +215,11 @@ export const bridgeLayer = Layer.effect(
         if (!pending) return;
 
         yield* Reply.match(reply, {
-          Success: () => Deferred.succeed(pending.result, reply),
-          Tabs: () => Deferred.succeed(pending.result, reply),
-          Failure: ({ message }) => Deferred.fail(pending.result, new BridgeError({ message })),
+          Read: () => Deferred.succeed(pending.result, reply),
+          ReadPdf: () => Deferred.succeed(pending.result, reply),
+          List: () => Deferred.succeed(pending.result, reply),
+          Failure: ({ message, code }) =>
+            Deferred.fail(pending.result, new BridgeError(code ? { message, code } : { message })),
         });
       }, mutex.withPermits(1)),
       release: Effect.fn("Bridge.release")(function* (clientId) {
@@ -219,7 +229,7 @@ export const bridgeLayer = Layer.effect(
       read: Effect.fn("Bridge.read")(function* (sessionId, input = {}) {
         const reply = yield* request(sessionId, BrowserRequest.cases.Read.make(input));
 
-        if (!Reply.guards.Success(reply))
+        if (!Reply.guards.Read(reply))
           return yield* Effect.fail(
             new BridgeError({ message: "Chrome returned an unexpected response to a page read." }),
           );
@@ -235,10 +245,20 @@ export const bridgeLayer = Layer.effect(
 
         return reply.page;
       }),
+      readPdf: Effect.fn("Bridge.readPdf")(function* (sessionId, input) {
+        const reply = yield* request(sessionId, BrowserRequest.cases.ReadPdf.make(input));
+
+        if (!Reply.guards.ReadPdf(reply) || reply.result.documentId !== input.documentId)
+          return yield* Effect.fail(
+            new BridgeError({ message: "Chrome returned an unexpected PDF document." }),
+          );
+
+        return reply.result;
+      }),
       list: Effect.fn("Bridge.list")(function* (sessionId) {
         const reply = yield* request(sessionId, BrowserRequest.cases.List.make({}));
 
-        if (!Reply.guards.Tabs(reply))
+        if (!Reply.guards.List(reply))
           return yield* Effect.fail(
             new BridgeError({
               message: "Chrome returned an unexpected response to a tab listing.",

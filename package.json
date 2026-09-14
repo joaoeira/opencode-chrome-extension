@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0-rc.112",
+    "@firecrawl/pdf-inspector-wasm": "1.19.0",
     "@opencode/client": "2.0.2",
     "@opencode/plugin": "2.0.2",
     "@opencode/schema": "2.0.2",

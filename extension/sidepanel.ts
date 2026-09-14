@@ -1,7 +1,8 @@
-import { Effect, Fiber, Schema, Schedule, Option } from "effect";
+import { Effect, Fiber, Schema, Schedule, Option, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { BrowserError, type Settings, localOrigin } from "../shared/contracts.ts";
 import { NativeReply, nativeHostName } from "../shared/native.ts";
+import { pdfLayer } from "./pdf.ts";
 import { browserLayer } from "./browser.ts";
 import { connect } from "./connection.ts";
 
@@ -96,7 +97,7 @@ const program = Effect.gen(function* () {
   yield* connect(selected, () => sessionId);
 }).pipe(
   Effect.scoped,
-  Effect.provide(browserLayer),
+  Effect.provide(browserLayer.pipe(Layer.provide(pdfLayer))),
   Effect.provide(FetchHttpClient.layer),
   Effect.tapError((cause) => Effect.logError("Chrome sidebar connection failed", cause)),
   Effect.retry(Schedule.spaced("3 seconds")),

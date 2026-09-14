@@ -7,7 +7,12 @@ await Effect.runPromise(
     yield* Effect.tryPromise(() => mkdir("dist/extension", { recursive: true }));
     yield* Effect.tryPromise(() =>
       build({
-        entryPoints: ["extension/background.ts", "extension/sidepanel.ts", "extension/session.ts"],
+        entryPoints: [
+          "extension/background.ts",
+          "extension/sidepanel.ts",
+          "extension/session.ts",
+          "extension/pdf-worker.ts",
+        ],
         bundle: true,
         format: "esm",
         platform: "browser",
@@ -29,6 +34,12 @@ await Effect.runPromise(
         minify: true,
         sourcemap: true,
       }),
+    );
+    yield* Effect.tryPromise(() =>
+      cp(
+        "node_modules/@firecrawl/pdf-inspector-wasm/pdf_inspector_wasm_bg.wasm",
+        "dist/extension/pdf_inspector_wasm_bg.wasm",
+      ),
     );
     yield* Effect.forEach(
       ["manifest.json", "sidepanel.html", "sidepanel.css"],

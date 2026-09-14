@@ -5,8 +5,10 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { Config, Effect, Schema } from "effect";
-import { Tab } from "../shared/contracts.ts";
+import { Config, Effect, Option, Schema } from "effect";
+import { pagedPdf } from "./pdf-fixture.ts";
+import { PdfDocument, PdfText, type ReadPdfInput } from "../shared/pdf.ts";
+import { Tab, type ReadInput } from "../shared/contracts.ts";
 
 const ModelRequest = Schema.Struct({
   messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.Unknown })),
@@ -19,6 +21,60 @@ const ModelRequest = Schema.Struct({
   ),
 });
 
+const nextToolCall = (body: typeof ModelRequest.Type, fixtureUrl: string) => {
+  if (!body.tools?.some((tool) => tool.function.name === "browser_read_page")) return null;
+  const results = body.messages.filter((message) => message.role === "tool");
+
+  const call = (name: string, args: ReadInput | ReadPdfInput) => ({
+    index: 0,
+    id: "call_" + results.length,
+    type: "function",
+    function: { name, arguments: JSON.stringify(args) },
+  });
+
+  const messages = JSON.stringify(body.messages);
+
+  if (messages.includes("Read PDF page 4")) {
+    const recentTools = body.messages
+      .slice(body.messages.findLastIndex((message) => message.role === "user") + 1)
+      .filter((message) => message.role === "tool");
+
+    if (messages.includes("Read cached PDF again")) {
+      if (recentTools.length > 0) return null;
+    } else if (
+      results.some((message) =>
+        Option.isSome(Schema.decodeUnknownOption(Schema.fromJsonString(PdfText))(message.content)),
+      )
+    )
+      return null;
+
+    const document = results
+      .flatMap((message) =>
+        Option.toArray(
+          Schema.decodeUnknownOption(Schema.fromJsonString(PdfDocument))(message.content),
+        ),
+      )
+      .at(-1);
+
+    if (document) return call("browser_read_pdf", { documentId: document.documentId, pages: [4] });
+
+    return call("browser_read_page", {});
+  }
+
+  if (!messages.includes("What page am I on?") || results.length >= 2) return null;
+  const listed = results[0];
+
+  if (!listed) return call("browser_list_tabs", {});
+
+  const tab = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Tab)))(
+    listed.content,
+  ).find((tab) => tab.url === fixtureUrl);
+
+  if (!tab) throw new Error("Expected the fixture tab in the tool result");
+
+  return call("browser_read_page", { tabId: tab.tabId });
+};
+
 test("browser tools follow the sidebar session and deliver full content across projects", async ({
   playwright,
 }) => {
@@ -29,6 +85,13 @@ test("browser tools follow the sidebar session and deliver full content across p
 
   const provider = createServer(async (request, response) => {
     if (request.method === "GET") {
+      if (request.url === "/pdf") {
+        response.writeHead(200, { "Content-Type": "application/pdf" });
+        response.end(pagedPdf);
+
+        return;
+      }
+
       response.writeHead(200, { "Content-Type": "text/html" });
       response.end(
         `<!doctype html><title>Chrome fixture</title><article><p>${"Visible Chrome content. ".repeat(5500)}</p><p>ARTICLE ENDS HERE</p></article>`,
@@ -46,26 +109,11 @@ test("browser tools follow the sidebar session and deliver full content across p
     );
 
     requests.push(body);
-    const results = body.messages.filter((message) => message.role === "tool");
-
-    const callBrowser =
-      body.tools?.some((tool) => tool.function.name === "browser_read_page") &&
-      JSON.stringify(body.messages).includes("What page am I on?") &&
-      results.length < 2;
-
-    const toolName = results.length === 0 ? "browser_list_tabs" : "browser_read_page";
-    const listed = results[0];
-
-    const tabId =
-      callBrowser && listed
-        ? Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Tab)))(listed.content).find(
-            (tab) => tab.url === fixtureUrl,
-          )?.tabId
-        : undefined;
+    const call = nextToolCall(body, fixtureUrl);
 
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 0, model: "fixture", choices: [{ index: 0, delta: callBrowser ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${results.length}`, type: "function", function: { name: toolName, arguments: JSON.stringify(tabId === undefined ? {} : { tabId }) } }] } : { role: "assistant", content: "Hi" }, finish_reason: callBrowser ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", created: 0, model: "fixture", choices: [{ index: 0, delta: call ? { role: "assistant", tool_calls: [call] } : { role: "assistant", content: "Hi" }, finish_reason: call ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
     );
   });
 
@@ -172,7 +220,7 @@ test("browser tools follow the sidebar session and deliver full content across p
         .sort();
     };
 
-    const browserTools = ["browser_list_tabs", "browser_read_page"];
+    const browserTools = ["browser_list_tabs", "browser_read_page", "browser_read_pdf"];
     expect(await visibleTools(first)).toEqual([]);
 
     const profile = resolve(directory, "chrome-profile");
@@ -243,6 +291,38 @@ test("browser tools follow the sidebar session and deliver full content across p
     }, route(second));
     await expect.poll(() => visibleTools(second), { timeout: 15000 }).toEqual(browserTools);
     expect(await visibleTools(first)).toEqual([]);
+    await target.goto(new URL("/pdf", fixtureUrl).href);
+    await target.bringToFront();
+    await post(`session/${second}/prompt`, { text: "Read PDF page 4" });
+    await expect
+      .poll(
+        () =>
+          requests
+            .flatMap((request) => request.messages)
+            .some(
+              (message) =>
+                message.role === "tool" &&
+                JSON.stringify(message.content).includes("FOURTH_PAGE_ONLY"),
+            ),
+        { timeout: 20000 },
+      )
+      .toBe(true);
+
+    const metadata = requests
+      .flatMap((request) => request.messages)
+      .flatMap((message) =>
+        Option.toArray(
+          Schema.decodeUnknownOption(Schema.fromJsonString(PdfDocument))(message.content),
+        ),
+      )
+      .at(-1);
+
+    expect(metadata).toMatchObject({ type: "pdf", pageCount: 4 });
+    expect(
+      requests
+        .flatMap((request) => request.tools ?? [])
+        .find((tool) => tool.function.name === "browser_read_pdf")?.function.parameters,
+    ).toMatchObject({ type: "object", required: ["documentId"] });
     await frame.evaluate(() => {
       history.pushState({}, "", "/");
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -250,6 +330,20 @@ test("browser tools follow the sidebar session and deliver full content across p
     await expect.poll(() => visibleTools(second)).toEqual([]);
     await frame.goto(`${endpoint.url}${route(second)}`);
     await expect.poll(() => visibleTools(second)).toEqual(browserTools);
+    await post(`session/${second}/prompt`, { text: "Read cached PDF again" });
+    await expect
+      .poll(
+        () =>
+          requests
+            .flatMap((request) => request.messages)
+            .some(
+              (message) =>
+                message.role === "tool" &&
+                JSON.stringify(message.content).includes("pdf_document_expired"),
+            ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
     await panel.close();
     await expect.poll(() => visibleTools(second), { timeout: 15000 }).toEqual([]);
   } finally {

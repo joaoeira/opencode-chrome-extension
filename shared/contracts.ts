@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { PdfDocument, PdfText, ReadPdfInput, PdfErrorCode } from "./pdf.ts";
 
 export const Target = Schema.Struct({
   tabId: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -23,9 +24,14 @@ export const ReadInput = Schema.Struct({ tabId: Schema.optional(Target.fields.ta
 
 export interface ReadInput extends Schema.Schema.Type<typeof ReadInput> {}
 
+export const ReadResult = Schema.Union([Page, PdfDocument]);
+
+export type ReadResult = typeof ReadResult.Type;
+
 export const BrowserRequest = Schema.TaggedUnion({
   Read: ReadInput.fields,
   List: {},
+  ReadPdf: ReadPdfInput.fields,
 });
 
 export type BrowserRequest = typeof BrowserRequest.Type;
@@ -39,9 +45,13 @@ export const Job = Schema.Struct({
 export interface Job extends Schema.Schema.Type<typeof Job> {}
 
 export const Reply = Schema.TaggedUnion({
-  Success: { page: Page },
-  Tabs: { tabs: Schema.Array(Tab) },
-  Failure: { message: Schema.String.check(Schema.isMaxLength(2000)) },
+  Read: { page: ReadResult },
+  ReadPdf: { result: PdfText },
+  List: { tabs: Schema.Array(Tab) },
+  Failure: {
+    message: Schema.String.check(Schema.isMaxLength(2000)),
+    code: Schema.optionalKey(PdfErrorCode),
+  },
 });
 
 export type Reply = typeof Reply.Type;
@@ -57,6 +67,7 @@ export interface Settings extends Schema.Schema.Type<typeof Settings> {}
 
 export class BridgeError extends Schema.TaggedError<BridgeError>()("BridgeError", {
   message: Schema.String,
+  code: Schema.optionalKey(PdfErrorCode),
 }) {}
 
 export class BrowserError extends Schema.TaggedError<BrowserError>()("BrowserError", {

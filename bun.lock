@@ -5,6 +5,7 @@
       "name": "opencode-chrome-extension",
       "dependencies": {
         "@effect/platform-node": "4.0.0-rc.112",
+        "@firecrawl/pdf-inspector-wasm": "1.19.0",
         "@opencode/client": "2.0.2",
         "@opencode/plugin": "2.0.2",
         "@opencode/schema": "2.0.2",
@@ -139,6 +140,8 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.28.2", "", { "os": "win32", "cpu": "ia32" }, "sha512-YmJbfTlvU7Sdn9BB+4PRES4oB6pxgS37MAONj+hBr/cpXS1aBPKXxNnDbu+QCWPj0o9dgyxeq79g6c5P8KeuYA=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.2", "", { "os": "win32", "cpu": "x64" }, "sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g=="],
+
+    "@firecrawl/pdf-inspector-wasm": ["@firecrawl/pdf-inspector-wasm@1.19.0", "", {}, "sha512-BZrQcs8src4uHwtlZ6m1+KoxFnQSYuUBPbwoDCbfYbwMOOgacUVQ1WDjyGQKrVzYUsy7bRG5gA2KWqOQ+bndBA=="],
 
     "@gar/promise-retry": ["@gar/promise-retry@1.0.3", "", {}, "sha512-GmzA9ckNokPypTg10pgpeHNQe7ph+iIKKmhKu3Ob9ANkswreCx7R3cKmY781K8QK3AqVL3xVh9A42JvIAbkkSA=="],
 

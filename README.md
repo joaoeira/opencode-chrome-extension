@@ -165,7 +165,9 @@ The sidebar contains only the OpenCode iframe. Connection failures are logged to
 
 ## Development
 
-The project uses TypeScript, Effect v4, Bun, and esbuild. The extension and plugin share validated RPC contracts.
+The project uses TypeScript, Effect v4, Bun, and esbuild. The extension and plugin share validated RPC contracts; provider-facing tool parameters are generated from the same schemas.
+
+Effect owns the infrastructure: HTTP streams enforce PDF download limits, worker RPC carries typed parser requests and replies, and scoped caches own document lifetimes. Each PDF snapshot has one worker, which is explicitly terminated on failure because synchronous WASM cannot respond to cooperative cancellation. Sidebar session changes switch scopes, cancelling the previous session’s jobs before clearing its documents. The server queue uses synchronized state transitions, and the native helper uses Effect’s standard-input stream and output sink around Chrome’s length-prefixed messages.
 
 | Directory    | Purpose                                                                           |
 | ------------ | --------------------------------------------------------------------------------- |

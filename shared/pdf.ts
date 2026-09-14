@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { Rpc, RpcGroup } from "effect/unstable/rpc";
 
 export const pdfLimits = {
   batchPages: 3,
@@ -148,17 +149,15 @@ export class PdfError extends Schema.TaggedError<PdfError>()("PdfError", {
   message: Schema.String,
 }) {}
 
-export const PdfWorkerRequest = Schema.TaggedUnion({
-  Open: { url: Schema.String },
-  Extract: { pages: PdfPages },
-});
-
-export type PdfWorkerRequest = typeof PdfWorkerRequest.Type;
-
-export const PdfWorkerReply = Schema.TaggedUnion({
-  Opened: { pageCount: PdfDocument.fields.pageCount },
-  Extracted: { text: Schema.String, warnings: Schema.Array(PdfWarning) },
-  Failed: { code: PdfErrorCode, message: Schema.String },
-});
-
-export type PdfWorkerReply = typeof PdfWorkerReply.Type;
+export const PdfWorkerRpc = RpcGroup.make(
+  Rpc.make("Open", {
+    payload: { url: Schema.String },
+    success: Schema.Struct({ pageCount: PdfDocument.fields.pageCount }),
+    error: PdfError,
+  }),
+  Rpc.make("Extract", {
+    payload: { pages: PdfPages },
+    success: Schema.Struct({ text: Schema.String, warnings: Schema.Array(PdfWarning) }),
+    error: PdfError,
+  }),
+);

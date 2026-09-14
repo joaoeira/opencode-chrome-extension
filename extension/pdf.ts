@@ -1,3 +1,5 @@
+import { BrowserWorker } from "@effect/platform-browser";
+import { RpcClient, type RpcClientError } from "effect/unstable/rpc";
 import {
   Context,
   Data,
@@ -17,8 +19,7 @@ import {
   PdfDocumentId,
   PdfError,
   PdfText,
-  PdfWorkerReply,
-  PdfWorkerRequest,
+  PdfWorkerRpc,
   type ReadPdfDocumentInput,
 } from "../shared/pdf.ts";
 
@@ -38,12 +39,6 @@ interface DocumentKey extends PdfSource {
   readonly documentId: PdfDocumentId;
   readonly sessionId: string;
 }
-
-const protocolError = () =>
-  new PdfError({
-    code: "pdf_extraction_failed",
-    message: "The PDF worker returned an unexpected reply. Open the PDF again.",
-  });
 
 export const withPdfDeadline = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -71,77 +66,47 @@ const makeDocument = Effect.fn("PdfDocuments.acquire")(function* (source: Docume
     (worker) => Effect.sync(() => worker.terminate()),
   );
 
-  // The worker protocol has one reply channel; serialize requests at its owner.
-  const requests = yield* Semaphore.make(1);
-  let alive = true;
-
-  const ask = Effect.fn("PdfDocuments.ask")((request: PdfWorkerRequest) =>
-    Effect.callback<PdfWorkerReply, PdfError>((resume) => {
-      if (!alive) {
-        resume(Effect.fail(expired()));
-
-        return;
-      }
-
-      const message = (event: MessageEvent) =>
-        resume(
-          Schema.decodeUnknownEffect(PdfWorkerReply)(event.data).pipe(
-            Effect.mapError(
-              () =>
-                new PdfError({
-                  code: "pdf_extraction_failed",
-                  message: "The PDF worker returned an invalid result.",
-                }),
-            ),
-          ),
-        );
-
-      const error = () =>
-        resume(
-          Effect.fail(
-            new PdfError({
-              code: "pdf_extraction_failed",
-              message: "The PDF worker stopped unexpectedly. Open the PDF again.",
-            }),
-          ),
-        );
-
-      worker.addEventListener("message", message);
-      worker.addEventListener("error", error);
-      worker.postMessage(request);
-
-      return Effect.sync(() => {
-        worker.removeEventListener("message", message);
-        worker.removeEventListener("error", error);
-      });
-    }).pipe(
-      Effect.timeout(pdfWorkerTimeoutMs),
-      Effect.catchTag("TimeoutError", () =>
-        Effect.fail(
-          new PdfError({
-            code: "pdf_extraction_failed",
-            message: `PDF processing exceeded ${pdfWorkerTimeoutMs / 1000} seconds. Open the PDF again and request fewer pages.`,
-          }),
-        ),
-      ),
-      Effect.onError(() =>
-        Effect.sync(() => {
-          alive = false;
-          worker.terminate();
+  const transport = yield* Layer.build(
+    RpcClient.layerProtocolWorker({ size: 1, concurrency: 1 }).pipe(
+      Layer.provide(BrowserWorker.layer(() => worker)),
+    ),
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new PdfError({
+          code: "pdf_extraction_failed",
+          message: "Could not start the PDF worker. Open the PDF again.",
         }),
-      ),
-      Effect.flatMap((reply) =>
-        PdfWorkerReply.guards.Failed(reply)
-          ? Effect.fail(new PdfError({ code: reply.code, message: reply.message }))
-          : Effect.succeed(reply),
-      ),
-      requests.withPermits(1),
     ),
   );
 
-  const opened = yield* ask(PdfWorkerRequest.cases.Open.make({ url: source.url }));
+  const client = yield* RpcClient.make(PdfWorkerRpc).pipe(Effect.provideContext(transport));
 
-  if (!PdfWorkerReply.guards.Opened(opened)) return yield* Effect.fail(protocolError());
+  const call = <A>(request: Effect.Effect<A, PdfError | RpcClientError.RpcClientError>) =>
+    request.pipe(
+      Effect.catchTag("RpcClientError", () =>
+        Effect.fail(
+          new PdfError({
+            code: "pdf_extraction_failed",
+            message: "The PDF worker stopped unexpectedly. Open the PDF again.",
+          }),
+        ),
+      ),
+      Effect.timeoutOrElse({
+        duration: pdfWorkerTimeoutMs,
+        orElse: () =>
+          Effect.fail(
+            new PdfError({
+              code: "pdf_extraction_failed",
+              message: "PDF processing timed out. Open the PDF again and request fewer pages.",
+            }),
+          ),
+      }),
+      // RPC interruption cannot preempt synchronous WASM. Terminate the actual worker.
+      Effect.onError(() => Effect.sync(() => worker.terminate())),
+    );
+
+  const opened = yield* call(client.Open({ url: source.url }));
 
   const metadata = PdfDocument.make({
     type: "pdf",
@@ -152,7 +117,12 @@ const makeDocument = Effect.fn("PdfDocuments.acquire")(function* (source: Docume
     pageCount: opened.pageCount,
   });
 
-  return { metadata, ask };
+  return {
+    metadata,
+    extract: Effect.fn("PdfDocuments.extract")((pages: ReadonlyArray<number>) =>
+      call(client.Extract({ pages })),
+    ),
+  };
 });
 
 interface Interface {
@@ -284,10 +254,9 @@ export const pdfLayer = Layer.effect(
       const { pages, count } = yield* selectBatch(position, pageCount);
 
       const reply = yield* document
-        .ask(PdfWorkerRequest.cases.Extract.make({ pages }))
+        .extract(pages)
         .pipe(Effect.onError(() => ScopedCache.invalidate(documents, key)));
 
-      if (!PdfWorkerReply.guards.Extracted(reply)) return yield* Effect.fail(protocolError());
       const portion = yield* sliceText(reply.text, position.offset);
       const end = portion.end;
 

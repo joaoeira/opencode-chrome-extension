@@ -16,6 +16,7 @@
     "setup": "bun run build && bun scripts/install-native.ts"
   },
   "dependencies": {
+    "@effect/platform-browser": "4.0.0-rc.112",
     "@effect/platform-node": "4.0.0-rc.112",
     "@firecrawl/pdf-inspector-wasm": "1.19.0",
     "@opencode/client": "2.0.2",

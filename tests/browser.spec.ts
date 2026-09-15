@@ -6,9 +6,10 @@ import {
   type BrowserContext,
   type Page as BrowserPage,
 } from "@playwright/test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { Config, Deferred, Effect, Schema } from "effect";
 import { pagedPdf, denseLines, pdfFixture } from "./pdf-fixture.ts";
@@ -607,4 +608,25 @@ test("reports encrypted PDFs as password-required and recovers for another docum
   expect((await readPdf(fixture, { documentId: document.documentId, pages: [4] })).text).toContain(
     "FOURTH_PAGE_ONLY",
   );
+});
+
+test("reads selected pages from a local PDF tab", async ({ browserFixture: fixture }) => {
+  const directory = await mkdtemp(resolve(tmpdir(), "opencode-local-pdf-"));
+  const file = resolve(directory, "A local book.pdf");
+  await writeFile(file, pagedPdf);
+  const url = pathToFileURL(file).href;
+
+  try {
+    await fixture.target.goto(url);
+    const tab = (await listTabs(fixture)).find((entry) => entry.url === url);
+
+    if (!tab) throw new Error("Expected local PDF tab");
+    const result = await readPdf(fixture, { tabId: tab.tabId, pages: [2] });
+    expect(result).toMatchObject({ tabId: tab.tabId, url, pageCount: 4, pages: [2] });
+    expect(result.text).toContain("SECOND_PAGE_ONLY");
+    expect(result.text).not.toContain("THIRD_PAGE_ONLY");
+  } finally {
+    await fixture.target.goto(fixture.fixtureUrl);
+    await rm(directory, { recursive: true, force: true });
+  }
 });

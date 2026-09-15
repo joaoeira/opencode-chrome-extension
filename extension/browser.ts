@@ -87,10 +87,30 @@ const inspectTab = Effect.fn("Browser.inspectTab")(function* (windowId: number, 
     );
   }
 
-  if (tabId === undefined || !tab?.url || !/^(https?:\/\/|blob:https?:\/\/)/.test(tab.url)) {
+  if (
+    tabId === undefined ||
+    !tab?.url ||
+    !/^(https?:\/\/|blob:https?:\/\/|file:\/\/)/.test(tab.url)
+  ) {
     return yield* Effect.fail(
       new BrowserError({ message: "The selected tab is not a readable web page." }),
     );
+  }
+
+  if (tab.url.startsWith("file:")) {
+    const allowed = yield* Effect.tryPromise({
+      try: () => chrome.extension.isAllowedFileSchemeAccess(),
+      catch: (cause) =>
+        new BrowserError({ message: "Could not check Chrome's file access permission.", cause }),
+    });
+
+    if (!allowed)
+      return yield* Effect.fail(
+        new BrowserError({
+          message:
+            'Enable "Allow access to file URLs" for OpenCode Sidebar in chrome://extensions, then read this tab again.',
+        }),
+      );
   }
 
   const [probe] = yield* Effect.tryPromise({

@@ -13,7 +13,7 @@
     "tabs",
     "nativeMessaging"
   ],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": ["http://*/*", "https://*/*", "file:///*"],
   "content_scripts": [
     {
       "matches": ["http://127.0.0.1/*", "http://localhost/*"],
@@ -33,7 +33,7 @@
     "default_path": "sidepanel.html"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; frame-src http://127.0.0.1:* http://localhost:*; connect-src 'self' http: https: blob:; worker-src 'self'; style-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; frame-src http://127.0.0.1:* http://localhost:*; connect-src 'self' http: https: blob: file:; worker-src 'self'; style-src 'self'"
   },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArnAyCRoRMcYWpzBduxy8jpeZBEMHJiPT3tgWVCKIgoUbGBkLgtg3DFePi6OzS4U1rSPTTIzaSiuijNt6Ks+1FcAABliVZhsfGDHmcis1gzsvqG5btZbzWbHiA6RROe51r4hcJwdA8PR9MBkBy0kYOYKgv73oi7Mk1JpXfzWWVvnJ3CkmyCWYIFWCiBbHFb3yUMXNvXn9DlaLbGWi3JzNcbTyyQpGHkFQkYp4FKH5KuxwnULhYPzGb454HqLhsLhbmJ7NmA6D2Ecs5bqVVcHgIPmmXJn6BwlJth/XwMBAuL7BrJYC8oxrpo/R1uADwqZs1W84YKqY7gVyYm7k50rhGwIDAQAB"
 }

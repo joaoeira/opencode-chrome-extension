@@ -133,13 +133,13 @@ Each batch selects at most three pages. Responses contain at most 24,000 UTF-16 
 
 Requests accept up to 20 page numbers, normalized to unique document order. Page 0, out-of-range pages, and supplying both pages and cursor are errors. Documents remain tied to the source tab and OpenCode session. Switching active tabs does not retarget them; source navigation, closure, movement to another window, a session change, or disconnect requires reopening the PDF.
 
-The extension retains at most two PDF snapshots for ten minutes, with a 250 MiB download limit per file. It fetches the document again using Chrome's available credentials; that snapshot may differ from an older version still displayed in the viewer. Ordinary HTTP PDFs, cookie-authenticated PDFs, and live HTTP-origin blob URLs are supported. Expired or revoked URLs, POST-only documents, local files, and custom HTML PDF viewers may be inaccessible. No automatic download/save fallback is used.
+The extension retains at most two PDF snapshots for ten minutes, with a 250 MiB download limit per file. It fetches the document again using Chrome's available credentials; that snapshot may differ from an older version still displayed in the viewer. Ordinary HTTP PDFs, cookie-authenticated PDFs, local file PDFs, and live HTTP-origin blob URLs are supported. For local PDFs, enable **Allow access to file URLs** under **OpenCode Sidebar → Details** in `chrome://extensions`, then reopen the sidebar. The same tab IDs, page selection, and cursors work for local files. Expired or revoked URLs, POST-only documents, and custom HTML PDF viewers may be inaccessible. No automatic download/save fallback is used.
 
 Extraction uses packaged WebAssembly, with no Firecrawl API key or PDF upload. Encrypted PDFs return a password-required error. Scanned or textless pages produce warnings; OCR is not included. Download/parsing calls have a 60-second deadline. Large or unusually complex PDFs can be slow and use considerable memory; parsing runs separately from the connection heartbeat.
 
 ## Scope and data access
 
-The extension requests access to HTTP and HTTPS pages so it can read tabs without a fresh permission prompt for every site. Chrome's site-access controls can restrict this access. Its content security policy permits HTTP(S) connections to fetch PDFs; the OpenCode server connection is still restricted to loopback addresses by `localOrigin` validation.
+The extension requests access to HTTP, HTTPS, and local file pages so it can read tabs without a fresh permission prompt for every site. Chrome's site-access controls can restrict this access; local files require the separate file-access toggle. Its content security policy permits HTTP(S), blob, and file URLs to retrieve PDFs; the OpenCode server connection is still restricted to loopback addresses by `localOrigin` validation.
 
 HTML extraction runs inside Chrome against the loaded page. Defuddle's external-fetch fallback is disabled. Extracted content is then passed to **the model provider selected in OpenCode**; local extraction does not mean local model processing.
 

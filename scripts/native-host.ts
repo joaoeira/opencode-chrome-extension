@@ -1,6 +1,6 @@
 import { endianness } from "node:os";
 import { Effect, Logger, Option, Result, Schema, Stdio, Stream } from "effect";
-import { NodeFileSystem, NodeStdio } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
 import { NativeRequest, NativeReply } from "../shared/native.ts";
 import { discover } from "./local-service.ts";
 
@@ -60,8 +60,7 @@ await Effect.runPromise(
         yield* Stream.make(header, body).pipe(Stream.run(io.stdout({ endOnDone: true })));
       }),
     ),
-    Effect.provide(NodeStdio.layer),
-    Effect.provide(NodeFileSystem.layer),
+    Effect.provide(NodeServices.layer),
     Effect.provide(Logger.layer([Logger.withConsoleError(Logger.formatSimple)])),
   ),
 );

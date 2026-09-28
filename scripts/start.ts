@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { NodeFileSystem } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
 import { discover } from "./local-service.ts";
 
 await Effect.runPromise(
@@ -12,6 +12,6 @@ await Effect.runPromise(
           );
       }),
     ),
-    Effect.provide(NodeFileSystem.layer),
+    Effect.provide(NodeServices.layer),
   ),
 );

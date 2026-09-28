@@ -246,7 +246,7 @@ test("browser tools follow the sidebar session and deliver full content across p
       env: {
         ...process.env,
         ...env,
-        OPENCODE_CHROME_PORT: "0",
+        OPENCODE_CHROME_OPENCODE: resolve("node_modules/.bin/opencode"),
         OPENCODE_CHROME_HOST_DIRECTORY: resolve(profile, "NativeMessagingHosts"),
       },
     });

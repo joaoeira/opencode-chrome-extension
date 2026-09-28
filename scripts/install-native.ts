@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { NodeFileSystem } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { Config, Effect, FileSystem, Schema } from "effect";
@@ -31,11 +31,12 @@ await Effect.runPromise(
       Config.withDefault(""),
     );
 
-    const port = yield* Config.int("OPENCODE_CHROME_PORT").pipe(Config.withDefault(0));
-
     const config = yield* configuration;
 
-    const environment = Object.entries(config.env)
+    const environment = Object.entries({
+      ...config.env,
+      OPENCODE_CHROME_OPENCODE: config.override,
+    })
       .map(([key, value]) => `export ${key}=${quote(value)}`)
       .join("\n");
 
@@ -52,7 +53,7 @@ await Effect.runPromise(
     for (const directory of directories) {
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       const launcher = join(directory, `${nativeHostName}.sh`);
-      const script = `#!/bin/sh\ncd ${quote(process.cwd())} || exit 1\nexport OPENCODE_CHROME_PORT=${quote(String(port))}\n${environment}\nexec ${quote(process.execPath)} ${quote(resolve("scripts/native-host.ts"))} "$@"\n`;
+      const script = `#!/bin/sh\ncd ${quote(process.cwd())} || exit 1\n${environment}\nexec ${quote(process.execPath)} ${quote(resolve("scripts/native-host.ts"))} "$@"\n`;
       yield* fs.writeFileString(launcher, script, { mode: 0o700 });
       yield* fs.chmod(launcher, 0o700);
       yield* fs.writeFileString(
@@ -73,5 +74,5 @@ await Effect.runPromise(
     }
 
     console.log(`Registered native helper for extension ${id}. Reload dist/extension in Chrome.`);
-  }).pipe(Effect.provide(NodeFileSystem.layer)),
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

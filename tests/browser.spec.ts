@@ -34,6 +34,7 @@ const serviceOptions = (port: number) => ({
     XDG_DATA_HOME: resolve(".local/test-runtime/data"),
     XDG_STATE_HOME: resolve(".local/test-runtime/state"),
     XDG_CACHE_HOME: resolve(".local/test-runtime/cache"),
+    XDG_CONFIG_HOME: resolve(".local/test-runtime/config"),
   },
 });
 
@@ -49,6 +50,11 @@ interface BrowserFixture {
 
 const test = base.extend<{ browserFixture: BrowserFixture }>({
   browserFixture: async ({ playwright }, use) => {
+    // The helper restarts a stopped service through the CLI, which uses OpenCode's configured port.
+    execFileSync(resolve("node_modules/.bin/opencode"), ["service", "set", "port", "4099"], {
+      env: { ...process.env, ...serviceOptions(4099).env },
+    });
+
     await Service.ensure(serviceOptions(4099));
 
     const encrypted = await readFile(resolve("tests/fixtures/encrypted.pdf"));
@@ -98,7 +104,7 @@ const test = base.extend<{ browserFixture: BrowserFixture }>({
         ...process.env,
         OPENCODE_CHROME_HOST_DIRECTORY: resolve(profile, "NativeMessagingHosts"),
         ...serviceOptions(4099).env,
-        OPENCODE_CHROME_PORT: "4099",
+        OPENCODE_CHROME_OPENCODE: resolve("node_modules/.bin/opencode"),
       },
     });
 

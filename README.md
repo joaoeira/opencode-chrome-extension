@@ -44,7 +44,7 @@ The browser connection is shared across projects, but browser tools are offered 
 - Google Chrome 116 or newer, on macOS or Linux. The installer also registers the helper for Chromium and Chrome for Testing.
 - A model provider configured in OpenCode, or one you can connect through its UI.
 
-This checkout includes OpenCode **2.0.2** as a dependency. If you also use OpenCode in your terminal, use the same v2 build and configuration paths so both clients share the same service. OpenCode v1 is not supported.
+The sidebar uses whichever OpenCode v2 service is already running, whatever its version. If none is running, it starts the `opencode` found on your `PATH` when setup ran, falling back to the copy bundled with this checkout. It never replaces a running v2 service, so updating OpenCode does not require rebuilding the extension. OpenCode v1 is not supported.
 
 ### 1. Build and register the extension
 
@@ -69,10 +69,10 @@ Add the plugin's **absolute path** to the `plugins` array in your global OpenCod
 
 Use the global configuration so the browser tools are available across projects. This path points to `plugin`, not `dist/extension`.
 
-If OpenCode is already running, restart it from the repository root:
+If OpenCode is already running, restart it:
 
 ```sh
-./node_modules/.bin/opencode service restart
+opencode service restart
 ```
 
 ### 3. Load it in Chrome
@@ -159,7 +159,7 @@ The server connection is restricted to loopback HTTP. Credentials stay out of if
 
 **A particular tab cannot be read.** Check the extension's site-access permission in Chrome. Browser-internal pages are unsupported. For PDFs, check the retrieval error or OCR warning. If the tab was closed, list tabs again to obtain a current ID.
 
-**Providers or sessions differ from your terminal.** Confirm both clients use OpenCode v2 and the same configuration and data directories. Setup captures `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`; rerun it after changing those variables.
+**Providers or sessions differ from your terminal.** Confirm both clients use OpenCode v2 and the same configuration and data directories. Setup captures `PATH`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`; rerun it after changing those variables or moving your OpenCode installation.
 
 The sidebar contains only the OpenCode iframe. Connection failures are logged to the extension's console while it retries automatically. For diagnostics, inspect the sidebar through Chrome's developer tools or check the extension's **Errors** entry in `chrome://extensions` if one appears.
 
